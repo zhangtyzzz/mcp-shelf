@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
 import { chromium } from 'playwright-core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { launch, httpClient } from '../src/main.mjs';
@@ -25,6 +26,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelf-ui-'));
 const app = await launch({ dir, port: 0, demo: true });
 const c = new Client({ name: 'ui-test', version: '1' });
 let browser;
+let oauthApp;
 
 try {
   browser = await chromium.launch({ headless: true, executablePath: detectBrowser() });
@@ -141,13 +143,69 @@ try {
   await imp.getByRole('button', { name: 'Import', exact: true }).click();
   await p.getByText('imported-http', { exact: true }).waitFor();
 
+  // OAuth uses a native browser form, so Chromium controls the Origin header.
+  const adminPassword = 'browser-test-password';
+  oauthApp = await launch({ dir: path.join(dir, 'remote'), port: 0, mode: 'remote', host: '127.0.0.1', adminPassword });
+  const callback = app.url + '/healthz';
+  const registration = await fetch(oauthApp.url + '/oauth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_name: 'Browser OAuth Test', redirect_uris: [callback] })
+  });
+  assert.equal(registration.status, 201);
+  const { client_id: clientId } = await registration.json();
+  const verifier = randomBytes(32).toString('base64url');
+  const authorize = new URL(oauthApp.url + '/oauth/authorize');
+  authorize.search = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: callback,
+    response_type: 'code',
+    code_challenge: createHash('sha256').update(verifier).digest('base64url'),
+    code_challenge_method: 'S256',
+    state: 'browser-oauth-state'
+  });
+  await p.goto(authorize.href);
+  const submit = async (password) => {
+    await p.getByLabel('Admin Password').fill(password);
+    const [response] = await Promise.all([
+      p.waitForResponse((r) => r.url() === oauthApp.url + '/oauth/authorize' && r.request().method() === 'POST'),
+      p.getByRole('button', { name: 'Authorize', exact: true }).click()
+    ]);
+    return response;
+  };
+  const retry = await submit('wrong-password');
+  assert.equal(retry.status(), 401, `OAuth browser form sent Origin: ${await retry.request().headerValue('origin')}`);
+  await p.getByRole('alert').getByText('Invalid admin password.').waitFor();
+  const [approved, redirected] = await Promise.all([
+    submit(adminPassword),
+    p.waitForResponse((r) => r.url().startsWith(callback + '?'))
+  ]);
+  assert.equal(approved.status(), 200);
+  assert.equal(await approved.request().headerValue('origin'), oauthApp.url);
+  assert.equal(redirected.status(), 200);
+  assert.equal(await redirected.request().headerValue('referer'), null);
+  const result = new URL(redirected.url());
+  assert.equal(result.searchParams.get('state'), 'browser-oauth-state');
+  const exchange = await fetch(oauthApp.url + '/oauth/token', {
+    method: 'POST',
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: result.searchParams.get('code'),
+      client_id: clientId,
+      redirect_uri: callback,
+      code_verifier: verifier
+    })
+  });
+  assert.equal(exchange.status, 200);
+
   assert.deepEqual(errors, []);
   console.log(
-    'PASS Chromium browser: i18n (en/zh-CN), desktop/mobile layout, connection editor, config import, permissions, descriptions, search, playground, activity logs and live MCP verification.'
+    'PASS Chromium browser: i18n (en/zh-CN), desktop/mobile layout, connection editor, config import, permissions, descriptions, search, playground, activity logs, live MCP and OAuth authorization.'
   );
 } finally {
   await browser?.close();
   await c.close();
+  await oauthApp?.close();
   await app.close();
   fs.rmSync(dir, { recursive: true, force: true });
 }

@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.3] - 2026-11-27
+
+### Fixed
+- **Browser OAuth authorization**: Same-origin consent forms send the expected Origin, including after a password retry. Browser approvals continue to the registered client callback while enforcing the existing CSP and cross-origin request checks.
+
 ## [0.8.2] - 2026-11-27
 
 ### Security

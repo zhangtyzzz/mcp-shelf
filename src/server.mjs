@@ -453,7 +453,8 @@ export async function launch({
       }
       if (method === 'GET' && route === '/oauth/authorize') {
         const html = oauthServer.renderAuthorizePage(req, new URL(req.url, 'http://' + h));
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        // A native form POST needs a same-origin policy to send a non-null Origin.
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin' });
         return res.end(html);
       }
       if (method === 'POST' && route === '/oauth/authorize') {
@@ -467,8 +468,21 @@ export async function launch({
           retryUrl.searchParams.set('code_challenge_method', 'S256');
           if (result.flow.state) retryUrl.searchParams.set('state', result.flow.state);
           const html = oauthServer.renderAuthorizePage(req, retryUrl, 'Invalid admin password.');
-          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin' });
           return res.end(html);
+        }
+        // Finish native form submissions on Shelf before navigating to the registered client callback.
+        // Browsers may enforce form-action 'self' on redirects of the POST itself.
+        if (String(req.headers.accept || '').includes('text/html')) {
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            Refresh: `0; url=${result.redirect}`
+          });
+          return res.end(
+            `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+              `<title>MCP Shelf OAuth</title><link rel="stylesheet" href="/style.css"></head>` +
+              `<body><div class="login-wrap"><div class="login-card"><a class="btn primary" href="${escHtml(result.redirect)}">Continue to your MCP client</a></div></div></body></html>`
+          );
         }
         res.writeHead(302, { Location: result.redirect });
         return res.end();

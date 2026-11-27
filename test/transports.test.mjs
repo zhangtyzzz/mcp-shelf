@@ -90,6 +90,15 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   const nonce = /name="nonce"\s+value="([^"]+)"/.exec(formHtml)?.[1];
   assert.ok(nonce, 'authorize form includes CSRF nonce');
 
+  for (const origin of ['null', 'https://other-client.example']) {
+    const foreignSubmit = await fetch(asm.authorization_endpoint, {
+      method: 'POST',
+      headers: { Origin: origin },
+      body: new URLSearchParams({ nonce, decision: 'deny' })
+    });
+    assert.equal(foreignSubmit.status, 403, `must reject form Origin ${origin}`);
+  }
+
   // Wrong password rejected (401)
   const badApprove = await fetch(asm.authorization_endpoint, {
     method: 'POST',
