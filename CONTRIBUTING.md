@@ -1,55 +1,63 @@
 # Contributing to MCP Shelf
 
-欢迎提交 Issue 和 Pull Request！
+Issues and pull requests are welcome!
 
-## 开发环境
+## Development Setup
 
-- Node.js >= 22（零构建、纯 ESM，无需打包工具）
-- 可选：本机 Chrome / Chromium（用于运行 Playwright UI 端到端测试）
+- **Node.js >= 22** (zero-build pure ESM)
+- Optional: local Chrome or Chromium for Playwright UI E2E tests
 
 ```sh
 npm ci
 npm run demo
 ```
 
-## 目录结构
+## Project Layout
 
 ```text
 src/
-  main.mjs      # CLI 入口 (serve / demo / stdio / config) 与对外导出
-  server.mjs    # 本机 HTTP 网关、安全中间件、管理台 API、/mcp 与 /mcp-events
-  catalog.mjs   # 上游连接池、目录缓存、搜索打分、Ajv 校验、调用日志与变更通知
-  config.mjs    # 0600 原子配置持久化、字段校验、JSON/TOML 导入解析
+  main.mjs      # CLI entry (serve / demo / stdio / config) & public exports
+  server.mjs    # HTTP gateway, local/remote auth, admin API, /mcp & /mcp-events
+  catalog.mjs   # Upstream pool, 60s cache, search, Ajv validation, logs & events
+  config.mjs    # 0600 atomic config storage, validation, JSON/TOML importer
 ui/
-  index.html    # Web 工作台入口
-  style.css     # macOS 26 (Liquid Glass) 风格样式
-  app.js        # 零依赖原生前端应用
-  icon.svg      # 应用图标
+  index.html    # Web workbench shell
+  style.css     # macOS 26 Liquid Glass styling (Starlight Warm Stone × Nordic Slate)
+  app.js        # Zero-dependency SPA
+  i18n.js       # Lightweight i18n loader & locale registry
+  locales/      # Translation dictionaries (en.js, zh-CN.js, ...)
+  icon.svg      # App icon
 test/
-  gateway.test.mjs  # 核心协议、权限、导入导出、搜索与安全集成测试
-  ui.mjs            # Playwright 浏览器端到端测试（桌面 + 390px 移动端）
-  codex.mjs         # Codex CLI 真实发现与 --roundtrip 往返测试
-  claude.mjs        # Claude Code CLI 真实注册与连接测试
+  gateway.test.mjs  # Core protocol, allowlist, remote auth & security tests
+  ui.mjs            # Playwright E2E (desktop/mobile, i18n, playground, live MCP)
+  grok.mjs          # Grok Build CLI registration & doctor test
+  codex.mjs         # Codex CLI discovery & --roundtrip test
+  claude.mjs        # Claude Code CLI registration test
 ```
 
-## 提交前检查
+## Adding a New Language (i18n)
 
-请确保以下命令在本地全部通过：
+1. Copy [ui/locales/en.js](ui/locales/en.js) to `ui/locales/<code>.js` (e.g. `ja.js`, `ko.js`, `de.js`, `fr.js`) and translate the values.
+2. Add `{ code: '<code>', label: '<Native Name>' }` to `LOCALES` in [ui/i18n.js](ui/i18n.js).
+3. Restart the server — `src/server.mjs` automatically discovers and serves all files under `ui/locales/*.js`.
+
+## Pre-PR Checklist
 
 ```sh
 npm test
 npm run test:ui
 ```
 
-如涉及协议或桥接改动且本机安装了 Codex / Claude CLI，建议补充验证：
+If you modified MCP protocol or bridge behavior and have Codex / Grok / Claude CLIs installed:
 
 ```sh
 node test/codex.mjs --roundtrip
+node test/grok.mjs
 node test/claude.mjs
 ```
 
-## 安全原则
+## Security Invariants
 
-- 管理台仅绑定 `127.0.0.1`，禁止移除 Host / Origin / Sec-Fetch-Site / CSRF 校验。
-- 上游凭据只通过环境变量名引用，禁止将明文 Secret 写入 `config.json` 或导出文件。
-- 新发现的上游工具默认不在白名单中；修改上游命令、URL 或凭据变量名必须重置旧授权。
+- Never weaken `Host`, `Origin`, `Sec-Fetch-Site`, CSRF, or remote-mode session checks.
+- Never store plaintext upstream secrets in `config.json` or exported JSON; always reference by env var name.
+- Newly discovered tools must remain denied by default; changing upstream command, URL, or credential env names must reset approvals.

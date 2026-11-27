@@ -88,17 +88,17 @@ const cleanMsg = (s, max = 180) =>
 function diagnoseConnectError(err, fallback, stderrTail = '') {
   const code = err?.code || err?.cause?.code;
   const msg = cleanMsg(err?.message);
-  if (code === 'ENOENT') return `${fallback}（找不到可执行文件）`;
-  if (code === 'EACCES') return `${fallback}（可执行文件无执行权限）`;
-  if (code === 'ECONNREFUSED') return `${fallback}（目标端点拒绝连接）`;
+  if (code === 'ENOENT') return `${fallback} (executable not found)`;
+  if (code === 'EACCES') return `${fallback} (permission denied)`;
+  if (code === 'ECONNREFUSED') return `${fallback} (connection refused)`;
   if (err?.name === 'TimeoutError' || err?.name === 'AbortError' || /timed?\s*out/i.test(msg)) {
-    return `${fallback}（连接或握手超时）`;
+    return `${fallback} (timed out)`;
   }
   const httpCode = /\b(401|403|404|405|500|502|503)\b/.exec(msg);
-  if (httpCode) return `${fallback}（HTTP ${httpCode[1]}）`;
+  if (httpCode) return `${fallback} (HTTP ${httpCode[1]})`;
   const tail = cleanMsg(stderrTail, 140);
-  if (tail) return `${fallback}（${tail}）`;
-  if (msg && msg !== 'Error') return `${fallback}（${msg}）`;
+  if (tail) return `${fallback} (${tail})`;
+  if (msg && msg !== 'Error') return `${fallback} (${msg})`;
   return fallback;
 }
 
@@ -264,7 +264,7 @@ export class Catalog {
 
   async load(s, r) {
     const opts = { timeout: 12_000, signal: AbortSignal.timeout(12_000) };
-    let error = '连接或 MCP 握手失败。';
+    let error = 'Connection or MCP handshake failed.';
     let stderrTail = '';
     try {
       if (r.invalid) throw new Error();

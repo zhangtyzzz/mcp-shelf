@@ -244,6 +244,11 @@ i.live {
   font-size: 12.5px;
 }
 
+.crumbs .crumb-root {
+  padding: 0;
+  color: var(--muted);
+}
+
 .crumbs span {
   padding: 0 7px;
   color: rgba(42, 36, 28, 0.24);
@@ -252,6 +257,24 @@ i.live {
 .crumbs b {
   color: var(--ink);
   font-weight: 600;
+}
+
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lang-select {
+  width: auto !important;
+  padding: 4px 10px !important;
+  border-radius: 999px !important;
+  border: 1px solid rgba(255, 255, 255, 0.9) !important;
+  background: var(--glass-strong) !important;
+  box-shadow: var(--shadow-xs), var(--glass-highlight) !important;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  cursor: pointer;
 }
 
 .tag {

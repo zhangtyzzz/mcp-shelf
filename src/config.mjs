@@ -5,7 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.4.0';
+export const APP_VERSION = '0.5.0';
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));
 export const DEFAULT_DIR = () => path.join(os.homedir(), '.config', APP_NAME);
@@ -163,8 +163,8 @@ export const signature = (s) =>
 export const demoSource = (allowlist) =>
   source({
     id: 'demo',
-    label: '本地示例',
-    description: '离线回显和加法，不访问外网。',
+    label: 'Local Demo',
+    description: 'Offline echo and add tools for local verification.',
     transport: 'stdio',
     command: process.execPath,
     args: [CLI_PATH, 'demo-upstream'],

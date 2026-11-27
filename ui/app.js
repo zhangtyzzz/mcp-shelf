@@ -1,3 +1,12 @@
+import {
+  LOCALES,
+  applyStaticTranslations,
+  detectLocale,
+  getLocale,
+  setLocale,
+  t
+} from './i18n.js';
+
 const $ = (s) => document.querySelector(s);
 
 function el(tag, attrs = {}, ...children) {
@@ -37,32 +46,32 @@ const hero = (code, title, sub, cta) =>
   );
 const hint = (text) => el('p', { class: 'hint' }, text);
 
-const routes = {
-  sources: '连接管理',
-  tools: '工具目录',
-  logs: '调用记录',
-  meta: '元工具描述',
-  clients: '接入 Agent'
+const routeKeys = {
+  sources: 'nav.sources',
+  tools: 'nav.tools',
+  logs: 'nav.logs',
+  meta: 'nav.meta',
+  clients: 'nav.clients'
 };
 
-const statuses = {
-  ready: '已连接',
-  disabled: '已停用',
-  idle: '未检测',
-  error: '连接异常'
+const statusKeys = {
+  ready: 'status.ready',
+  disabled: 'status.disabled',
+  idle: 'status.idle',
+  error: 'status.error'
 };
 
 const logStatuses = {
-  ok: ['成功', 'ok'],
-  blocked: ['已拦截', 'warn'],
-  invalid: ['参数无效', 'warn'],
-  upstream_error: ['上游报错', 'bad'],
-  error: ['失败', 'bad']
+  ok: ['log.ok', 'ok'],
+  blocked: ['log.blocked', 'warn'],
+  invalid: ['log.invalid', 'warn'],
+  upstream_error: ['log.upstream_error', 'bad'],
+  error: ['log.error', 'bad']
 };
 
 let state;
 let logs = [];
-let view = Object.hasOwn(routes, location.hash.slice(1)) ? location.hash.slice(1) : 'sources';
+let view = Object.hasOwn(routeKeys, location.hash.slice(1)) ? location.hash.slice(1) : 'sources';
 let q = '';
 let filter = '';
 let allowOnly = false;
@@ -73,6 +82,7 @@ let toastTimer;
 let editing;
 let originButton;
 let busy = false;
+let needsLogin = false;
 
 const expandedTools = new Set();
 const tryArgsCache = new Map();
@@ -89,7 +99,7 @@ async function request(route, method = 'GET', data) {
   });
   const j = await r.json();
   if (!r.ok) {
-    const err = Error(j.error || '请求未完成');
+    const err = Error(j.error || t('toast.requestFailed'));
     err.status = r.status;
     err.authRequired = !!j.auth_required;
     throw err;
@@ -97,17 +107,28 @@ async function request(route, method = 'GET', data) {
   return j;
 }
 
-async function load() {
-  state = await request('state');
+function updateInstanceChrome() {
+  if (!state) return;
   const tag = $('#instance-tag');
   if (tag) {
-    const prefix = state.mode === 'remote' ? '远程实例' : state.demo ? '仅本机 · Demo' : '仅本机';
+    const prefix =
+      state.mode === 'remote'
+        ? t('top.remote')
+        : state.demo
+          ? t('top.localDemo')
+          : t('top.local');
     tag.textContent = state.mode === 'remote' && state.publicUrl ? prefix : `${prefix} · :${state.port}`;
   }
   const modeLabel = $('#mode-label');
   if (modeLabel) {
-    modeLabel.textContent = state.mode === 'remote' ? '远程实例' : '本地实例';
+    modeLabel.textContent = state.mode === 'remote' ? t('footer.remote') : t('footer.local');
   }
+}
+
+async function load() {
+  state = await request('state');
+  needsLogin = false;
+  updateInstanceChrome();
 }
 
 async function loadLogs() {
@@ -159,14 +180,14 @@ function skeletonFromSchema(schema) {
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   for (const [key, prop] of Object.entries(schema.properties)) {
     if (!required.has(key) && Object.keys(schema.properties).length > 5) continue;
-    const t = Array.isArray(prop?.type) ? prop.type[0] : prop?.type;
+    const tp = Array.isArray(prop?.type) ? prop.type[0] : prop?.type;
     if (prop?.default !== undefined) obj[key] = prop.default;
     else if (Array.isArray(prop?.enum) && prop.enum.length) obj[key] = prop.enum[0];
-    else if (t === 'string') obj[key] = '';
-    else if (t === 'number' || t === 'integer') obj[key] = 0;
-    else if (t === 'boolean') obj[key] = false;
-    else if (t === 'array') obj[key] = [];
-    else if (t === 'object') obj[key] = {};
+    else if (tp === 'string') obj[key] = '';
+    else if (tp === 'number' || tp === 'integer') obj[key] = 0;
+    else if (tp === 'boolean') obj[key] = false;
+    else if (tp === 'array') obj[key] = [];
+    else if (tp === 'object') obj[key] = {};
     else obj[key] = '';
   }
   return JSON.stringify(obj, null, 2);
@@ -176,13 +197,17 @@ function annotationBadges(annotations) {
   if (!annotations || typeof annotations !== 'object') return [];
   const badges = [];
   if (annotations.readOnlyHint === true) {
-    badges.push(el('span', { class: 'badge', title: '上游声明：只读（仅供参考，不作为权限依据）' }, '只读'));
+    badges.push(el('span', { class: 'badge', title: t('tools.badge.readOnlyTip') }, t('tools.badge.readOnly')));
   }
   if (annotations.destructiveHint === true) {
-    badges.push(el('span', { class: 'badge warn', title: '上游声明：可能有破坏性（仅供参考）' }, '破坏性'));
+    badges.push(
+      el('span', { class: 'badge warn', title: t('tools.badge.destructiveTip') }, t('tools.badge.destructive'))
+    );
   }
   if (annotations.idempotentHint === true) {
-    badges.push(el('span', { class: 'badge', title: '上游声明：幂等（仅供参考）' }, '幂等'));
+    badges.push(
+      el('span', { class: 'badge', title: t('tools.badge.idempotentTip') }, t('tools.badge.idempotent'))
+    );
   }
   return badges;
 }
@@ -194,19 +219,19 @@ function sources() {
     'div',
     { class: 'metrics' },
     [
-      ['已配置连接', all.length],
+      [t('sources.metric.servers'), all.length],
       [
-        '已发现且开放的工具',
+        t('sources.metric.tools'),
         all
           .filter((s) => s.enabled)
-          .reduce((n, s) => n + s.tools.filter((t) => s.allowlist.includes(t.name)).length, 0)
+          .reduce((n, s) => n + s.tools.filter((tl) => s.allowlist.includes(tl.name)).length, 0)
       ],
-      ['Agent 元工具', state.meta.length]
+      [t('sources.metric.meta'), state.meta.length]
     ].map(([l, n]) => el('div', { class: 'metric' }, l, el('b', {}, String(n).padStart(2, '0'))))
   );
 
   const rows = all.map((s) => {
-    const allowedCount = s.tools.filter((t) => s.allowlist.includes(t.name)).length;
+    const allowedCount = s.tools.filter((tl) => s.allowlist.includes(tl.name)).length;
     return el(
       'article',
       { class: 'row' },
@@ -221,36 +246,37 @@ function sources() {
           el(
             'div',
             { class: 'sub mono' },
-            `${s.id} · ${s.transport === 'stdio' ? 'stdio' : 'Streamable HTTP'} · ${s.tools.length} 个已发现 · ${allowedCount} 个已开放`
+            t('sources.metaLine', {
+              id: s.id,
+              transport: s.transport === 'stdio' ? 'stdio' : 'Streamable HTTP',
+              discovered: s.tools.length,
+              allowed: allowedCount
+            })
           ),
           s.description ? el('p', {}, s.description) : null,
           s.missingEnvKeys?.length
-            ? el(
-                'div',
-                { class: 'warn-note' },
-                '当前环境未设置变量：' + s.missingEnvKeys.join(', ')
-              )
+            ? el('div', { class: 'warn-note' }, t('sources.missingEnv', { keys: s.missingEnvKeys.join(', ') }))
             : null,
           s.error ? el('div', { class: 'err' }, s.error) : null
         )
       ),
       actions(
-        pill(statuses[s.status], s.status === 'ready' ? 'ok' : s.status === 'error' ? 'bad' : ''),
+        pill(t(statusKeys[s.status] || 'status.idle'), s.status === 'ready' ? 'ok' : s.status === 'error' ? 'bad' : ''),
         s.enabled
           ? btn(
-              '读取工具',
-              (e) => run(e, () => request('servers/' + s.id + '/refresh', 'POST'), '已刷新目录'),
+              t('sources.refresh'),
+              (e) => run(e, () => request('servers/' + s.id + '/refresh', 'POST'), t('toast.refreshed')),
               'mini'
             )
           : null,
-        btn('编辑', (e) => openEditor(s, e.currentTarget), 'mini'),
+        btn(t('sources.edit'), (e) => openEditor(s, e.currentTarget), 'mini'),
         btn(
-          s.enabled ? '停用' : '启用',
+          s.enabled ? t('sources.disable') : t('sources.enable'),
           (e) =>
             run(
               e,
               () => update(s, { enabled: !s.enabled }),
-              s.enabled ? '连接已停用' : '连接已启用'
+              s.enabled ? t('toast.disabled') : t('toast.enabled')
             ),
           'mini'
         )
@@ -259,10 +285,10 @@ function sources() {
   });
 
   const panelExtra = actions(
-    el('span', { class: 'sub' }, all.length + ' 个连接'),
+    el('span', { class: 'sub' }, t('sources.count', { count: all.length })),
     all.length
       ? btn(
-          '导出 JSON',
+          t('sources.export'),
           async () => {
             try {
               const data = await request('export');
@@ -271,7 +297,7 @@ function sources() {
               const a = el('a', { href: url, download: 'mcp-shelf-servers.json' });
               a.click();
               URL.revokeObjectURL(url);
-              toast('已导出脱敏连接配置（不含本机 Token）。');
+              toast(t('toast.exported'));
             } catch (err) {
               toast(err.message, true);
             }
@@ -281,14 +307,14 @@ function sources() {
       : null,
     hasEnabled
       ? btn(
-          '全部刷新',
+          t('sources.refreshAll'),
           (e) =>
             run(
               e,
               () => request('servers/refresh-all', 'POST'),
               (res) => {
                 const okCount = (res.results || []).filter((r) => r.status === 'ready').length;
-                return `已刷新 ${res.results?.length || 0} 个连接（${okCount} 个就绪）`;
+                return t('toast.refreshedAll', { total: res.results?.length || 0, ready: okCount });
               }
             ),
           'mini'
@@ -298,37 +324,37 @@ function sources() {
 
   return [
     hero(
-      'WORKSPACE / CONNECTIONS',
-      '连接管理',
-      '一次配置上游 MCP，各个 Agent 共用同一套工具目录。',
+      t('sources.kicker'),
+      t('sources.title'),
+      t('sources.sub'),
       actions(
-        btn('导入配置', (e) => openImport(e.currentTarget)),
-        btn('＋ 添加连接', (e) => openEditor(null, e.currentTarget), 'primary')
+        btn(t('sources.import'), (e) => openImport(e.currentTarget)),
+        btn(t('sources.add'), (e) => openEditor(null, e.currentTarget), 'primary')
       )
     ),
     metrics,
     panel(
-      '上游 MCP',
+      t('sources.panel'),
       panelExtra,
       rows.length
         ? rows
         : empty(
-            '还没有连接',
-            '添加可信本地进程或 Streamable HTTP 端点，或直接导入已有客户端配置。',
-            btn('加载离线示例', (e) => run(e, () => request('demo', 'POST'), '已加载离线示例'))
+            t('sources.emptyTitle'),
+            t('sources.emptyDesc'),
+            btn(t('sources.loadDemo'), (e) => run(e, () => request('demo', 'POST'), t('toast.demoLoaded')))
           )
     ),
-    hint('新工具默认不对 Agent 开放。读完目录后，在「工具目录」逐个允许或在线试调。')
+    hint(t('sources.hint'))
   ];
 }
 
 function batchToggle(rows, allow) {
   const byServer = new Map();
-  for (const { s, t } of rows) {
+  for (const { s, tl } of rows) {
     if (!s.enabled) continue;
     const set = byServer.get(s.id) || { s, names: new Set(s.allowlist) };
-    if (allow) set.names.add(t.name);
-    else set.names.delete(t.name);
+    if (allow) set.names.add(tl.name);
+    else set.names.delete(tl.name);
     byServer.set(s.id, set);
   }
   const tasks = [];
@@ -345,36 +371,39 @@ function toolRows(body) {
   const needle = q.trim().normalize('NFKC').toLowerCase();
   const rows = state.servers
     .filter((s) => !filter || s.id === filter)
-    .flatMap((s) => s.tools.map((t) => ({ s, t })))
+    .flatMap((s) => s.tools.map((tl) => ({ s, tl })))
     .filter(
-      ({ s, t }) =>
-        (!allowOnly || (s.enabled && s.allowlist.includes(t.name))) &&
+      ({ s, tl }) =>
+        (!allowOnly || (s.enabled && s.allowlist.includes(tl.name))) &&
         (!needle ||
-          (t.tool_id + ' ' + t.description + ' ' + s.label)
+          (tl.tool_id + ' ' + tl.description + ' ' + s.label)
             .normalize('NFKC')
             .toLowerCase()
             .includes(needle))
     );
 
-  const countLabel = rows.length > 300 ? '前 300／' + rows.length : rows.length + ' 项';
+  const countLabel =
+    rows.length > 300
+      ? t('tools.countCapped', { count: rows.length })
+      : t('tools.count', { count: rows.length });
   const enabledRows = rows.filter(({ s }) => s.enabled);
-  const canAllowAny = enabledRows.some(({ s, t }) => !s.allowlist.includes(t.name));
-  const canRevokeAny = enabledRows.some(({ s, t }) => s.allowlist.includes(t.name));
+  const canAllowAny = enabledRows.some(({ s, tl }) => !s.allowlist.includes(tl.name));
+  const canRevokeAny = enabledRows.some(({ s, tl }) => s.allowlist.includes(tl.name));
 
   const headExtra = actions(
     el('span', { class: 'sub' }, countLabel),
     canAllowAny
       ? btn(
-          '全部允许',
+          t('tools.allowAll'),
           (e) => {
-            if (!confirm(`确认将当前筛选出的 ${enabledRows.length} 个工具全部对 Agent 开放？`)) return;
+            if (!confirm(t('tools.confirmAllowAll', { count: enabledRows.length }))) return;
             const tasks = batchToggle(enabledRows, true);
             run(
               e,
               async () => {
                 for (const fn of tasks) await fn();
               },
-              '已批量开放所选工具'
+              t('toast.batchAllowed')
             );
           },
           'mini'
@@ -382,16 +411,16 @@ function toolRows(body) {
       : null,
     canRevokeAny
       ? btn(
-          '全部撤销',
+          t('tools.revokeAll'),
           (e) => {
-            if (!confirm(`确认撤销当前筛选出的工具授权？`)) return;
+            if (!confirm(t('tools.confirmRevokeAll'))) return;
             const tasks = batchToggle(enabledRows, false);
             run(
               e,
               async () => {
                 for (const fn of tasks) await fn();
               },
-              '已批量撤销授权'
+              t('toast.batchRevoked')
             );
           },
           'mini'
@@ -401,32 +430,32 @@ function toolRows(body) {
 
   body.replaceChildren(
     panel(
-      '匹配工具',
+      t('tools.panel'),
       headExtra,
       rows.length
-        ? rows.slice(0, 300).map(({ s, t }) => {
-            const has = s.allowlist.includes(t.name);
-            const isOpen = expandedTools.has(t.tool_id);
+        ? rows.slice(0, 300).map(({ s, tl }) => {
+            const has = s.allowlist.includes(tl.name);
+            const isOpen = expandedTools.has(tl.tool_id);
             const area = el('textarea', {
-              'aria-label': '覆盖 ' + t.tool_id + ' 的描述',
-              value: s.overrides[t.name] || '',
+              'aria-label': t('tools.customDescAria', { toolId: tl.tool_id }),
+              value: s.overrides[tl.name] || '',
               maxlength: 2400,
               rows: 3,
-              placeholder: '留空使用上游描述'
+              placeholder: t('tools.customDescPlaceholder')
             });
 
-            const defaultArgs = tryArgsCache.has(t.tool_id)
-              ? tryArgsCache.get(t.tool_id)
-              : skeletonFromSchema(t.inputSchema);
+            const defaultArgs = tryArgsCache.has(tl.tool_id)
+              ? tryArgsCache.get(tl.tool_id)
+              : skeletonFromSchema(tl.inputSchema);
             let tryBtn;
             const tryInput = el('textarea', {
-              'aria-label': '试调 ' + t.tool_id + ' 的 JSON 参数',
+              'aria-label': t('tools.tryAria', { toolId: tl.tool_id }),
               class: 'mono',
               rows: 3,
               value: defaultArgs,
               on: {
                 input: (e) => {
-                  tryArgsCache.set(t.tool_id, e.target.value);
+                  tryArgsCache.set(tl.tool_id, e.target.value);
                 },
                 keydown: (e) => {
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -439,7 +468,7 @@ function toolRows(body) {
 
             const resultBox = el('div');
             const renderTryResult = () => {
-              const res = tryResults.get(t.tool_id);
+              const res = tryResults.get(tl.tool_id);
               if (!res) {
                 resultBox.replaceChildren();
                 return;
@@ -452,7 +481,7 @@ function toolRows(body) {
                   el(
                     'div',
                     {},
-                    el('strong', {}, isErr ? '试调返回错误' : '试调成功'),
+                    el('strong', {}, isErr ? t('tools.tryErr') : t('tools.tryOk')),
                     res.durationMs != null ? ` · ${res.durationMs} ms` : ''
                   ),
                   el('pre', {}, typeof res.body === 'string' ? res.body : JSON.stringify(res.body, null, 2))
@@ -462,26 +491,29 @@ function toolRows(body) {
             renderTryResult();
 
             const resetArgsBtn = btn(
-              '重置参数',
+              t('tools.tryReset'),
               () => {
-                const sk = skeletonFromSchema(t.inputSchema);
+                const sk = skeletonFromSchema(tl.inputSchema);
                 tryInput.value = sk;
-                tryArgsCache.set(t.tool_id, sk);
+                tryArgsCache.set(tl.tool_id, sk);
               },
               'mini'
             );
 
             tryBtn = btn(
-              '试调工具',
+              t('tools.tryRun'),
               async (e) => {
                 let parsedArgs;
                 try {
                   parsedArgs = JSON.parse(tryInput.value.trim() || '{}');
                   if (!parsedArgs || typeof parsedArgs !== 'object' || Array.isArray(parsedArgs)) {
-                    throw Error('参数必须是 JSON 对象');
+                    throw Error(t('tools.tryMustObj'));
                   }
                 } catch (err) {
-                  tryResults.set(t.tool_id, { isError: true, body: '参数 JSON 格式错误：' + err.message });
+                  tryResults.set(tl.tool_id, {
+                    isError: true,
+                    body: t('tools.tryInvalidJson', { error: err.message })
+                  });
                   renderTryResult();
                   return;
                 }
@@ -489,10 +521,10 @@ function toolRows(body) {
                 target.disabled = true;
                 try {
                   const res = await request('tools/test', 'POST', {
-                    tool_id: t.tool_id,
+                    tool_id: tl.tool_id,
                     arguments: parsedArgs
                   });
-                  tryResults.set(t.tool_id, {
+                  tryResults.set(tl.tool_id, {
                     isError: !!res.result?.isError,
                     durationMs: res.durationMs,
                     result: res.result,
@@ -500,7 +532,7 @@ function toolRows(body) {
                   });
                   renderTryResult();
                 } catch (err) {
-                  tryResults.set(t.tool_id, { isError: true, body: err.message });
+                  tryResults.set(tl.tool_id, { isError: true, body: err.message });
                   renderTryResult();
                 } finally {
                   target.disabled = false;
@@ -515,34 +547,36 @@ function toolRows(body) {
                 open: isOpen,
                 on: {
                   toggle: (e) => {
-                    if (e.currentTarget.open) expandedTools.add(t.tool_id);
-                    else expandedTools.delete(t.tool_id);
+                    if (e.currentTarget.open) expandedTools.add(tl.tool_id);
+                    else expandedTools.delete(tl.tool_id);
                   }
                 }
               },
-              el('summary', {}, '参数和描述'),
+              el('summary', {}, t('tools.details')),
               el(
                 'p',
                 { class: 'sub' },
-                t.schemaHash ? `输入 JSON Schema（指纹 ${t.schemaHash}）` : '输入 JSON Schema'
+                tl.schemaHash
+                  ? t('tools.inputSchemaHash', { hash: tl.schemaHash })
+                  : t('tools.inputSchema')
               ),
-              el('pre', { class: 'snippet' }, JSON.stringify(t.inputSchema, null, 2)),
-              t.outputSchema
+              el('pre', { class: 'snippet' }, JSON.stringify(tl.inputSchema, null, 2)),
+              tl.outputSchema
                 ? el(
                     'div',
                     {},
-                    el('p', { class: 'sub' }, '输出 JSON Schema'),
-                    el('pre', { class: 'snippet' }, JSON.stringify(t.outputSchema, null, 2))
+                    el('p', { class: 'sub' }, t('tools.outputSchema')),
+                    el('pre', { class: 'snippet' }, JSON.stringify(tl.outputSchema, null, 2))
                   )
                 : null,
-              el('label', {}, '自定义描述', area),
+              el('label', {}, t('tools.customDesc'), area),
               btn(
-                '保存描述',
+                t('tools.saveDesc'),
                 (e) =>
                   run(
                     e,
-                    () => update(s, { overrides: { ...s.overrides, [t.name]: area.value } }),
-                    '描述已保存'
+                    () => update(s, { overrides: { ...s.overrides, [tl.name]: area.value } }),
+                    t('toast.descSaved')
                   ),
                 'mini'
               ),
@@ -553,7 +587,7 @@ function toolRows(body) {
                     el(
                       'div',
                       { class: 'try-head' },
-                      el('span', { class: 'sub' }, '在线试调（Cmd/Ctrl + Enter 快速执行）'),
+                      el('span', { class: 'sub' }, t('tools.tryTitle')),
                       actions(resetArgsBtn, tryBtn)
                     ),
                     tryInput,
@@ -574,25 +608,25 @@ function toolRows(body) {
                   el(
                     'div',
                     { class: 'tool-title' },
-                    el('h2', { class: 'mono' }, t.tool_id),
-                    ...annotationBadges(t.annotations)
+                    el('h2', { class: 'mono' }, tl.tool_id),
+                    ...annotationBadges(tl.annotations)
                   ),
-                  el('p', {}, t.description || '上游未提供描述。')
+                  el('p', {}, tl.description || t('tools.noDesc'))
                 ),
                 actions(
-                  pill(has && s.enabled ? 'Agent 可调用' : '不对 Agent 开放', has && s.enabled ? 'ok' : ''),
+                  pill(has && s.enabled ? t('tools.allowed') : t('tools.blocked'), has && s.enabled ? 'ok' : ''),
                   btn(
-                    has ? '撤销' : '允许',
+                    has ? t('tools.revoke') : t('tools.allow'),
                     (e) =>
                       run(
                         e,
                         () =>
                           update(s, {
                             allowlist: has
-                              ? s.allowlist.filter((n) => n !== t.name)
-                              : [...s.allowlist, t.name]
+                              ? s.allowlist.filter((n) => n !== tl.name)
+                              : [...s.allowlist, tl.name]
                           }),
-                        has ? '已撤销授权' : '已对 Agent 开放'
+                        has ? t('toast.revoked') : t('toast.allowed')
                       ),
                     'mini'
                   )
@@ -601,7 +635,7 @@ function toolRows(body) {
               detailsEl
             );
           })
-        : empty('没有匹配的工具', '先读取一个上游工具目录，或调整筛选条件。')
+        : empty(t('tools.emptyTitle'), t('tools.emptyDesc'))
     )
   );
 }
@@ -611,8 +645,8 @@ function tools() {
   toolRows(body);
   const input = el('input', {
     type: 'search',
-    'aria-label': '搜索工具',
-    placeholder: '搜索名称、描述或连接…',
+    'aria-label': t('tools.searchAria'),
+    placeholder: t('tools.searchPlaceholder'),
     value: q,
     on: {
       input: (e) => {
@@ -624,7 +658,7 @@ function tools() {
   const select = el(
     'select',
     {
-      'aria-label': '筛选连接',
+      'aria-label': t('tools.filterServerAria'),
       on: {
         change: (e) => {
           filter = e.target.value;
@@ -632,7 +666,7 @@ function tools() {
         }
       }
     },
-    el('option', { value: '' }, '全部连接'),
+    el('option', { value: '' }, t('tools.allServers')),
     state.servers.map((s) => el('option', { value: s.id }, s.label))
   );
   select.value = filter;
@@ -649,10 +683,10 @@ function tools() {
         }
       }
     }),
-    '只看已开放'
+    t('tools.allowOnly')
   );
   return [
-    hero('WORKSPACE / CATALOG', '工具目录', '搜索工具、预览参数，逐个控制 Agent 能发现和调用什么。'),
+    hero(t('tools.kicker'), t('tools.title'), t('tools.sub')),
     el('div', { class: 'filters' }, input, select, allowed),
     body
   ];
@@ -675,7 +709,7 @@ function syncLogPolling() {
 function logsView() {
   const formatTime = (iso) => {
     try {
-      return new Date(iso).toLocaleTimeString('zh-CN', { hour12: false });
+      return new Date(iso).toLocaleTimeString(getLocale(), { hour12: false });
     } catch {
       return iso;
     }
@@ -684,7 +718,7 @@ function logsView() {
   const filtered = logs.filter((item) => !logSourceFilter || item.source === logSourceFilter);
 
   const rows = filtered.map((item) => {
-    const [label, cls] = logStatuses[item.status] || [item.status, ''];
+    const [labelKey, cls] = logStatuses[item.status] || [item.status, ''];
     return el(
       'article',
       { class: 'log-row' },
@@ -694,7 +728,7 @@ function logsView() {
         el(
           'div',
           { class: 'log-title' },
-          pill(item.source === 'playground' ? '试调' : 'Agent'),
+          pill(item.source === 'playground' ? t('log.source.playground') : t('log.source.agent')),
           el('strong', { class: 'mono' }, item.action),
           el('code', { class: 'sub' }, item.target)
         ),
@@ -703,7 +737,7 @@ function logsView() {
       el(
         'div',
         { class: 'log-meta' },
-        pill(label, cls),
+        pill(t(labelKey), cls),
         el('span', { class: 'mono' }, `${item.durationMs} ms`),
         el('span', { class: 'mono' }, formatTime(item.at))
       )
@@ -713,7 +747,7 @@ function logsView() {
   const sourceSelect = el(
     'select',
     {
-      'aria-label': '筛选来源',
+      'aria-label': t('logs.filterAria'),
       style: 'width:auto',
       on: {
         change: (e) => {
@@ -722,9 +756,9 @@ function logsView() {
         }
       }
     },
-    el('option', { value: '' }, '全部来源'),
-    el('option', { value: 'agent' }, '仅 Agent'),
-    el('option', { value: 'playground' }, '仅试调')
+    el('option', { value: '' }, t('logs.allSources')),
+    el('option', { value: 'agent' }, t('logs.onlyAgent')),
+    el('option', { value: 'playground' }, t('logs.onlyPlayground'))
   );
   sourceSelect.value = logSourceFilter;
 
@@ -741,32 +775,29 @@ function logsView() {
         }
       }
     }),
-    '自动刷新 (3s)'
+    t('logs.autoRefresh')
   );
 
   return [
     hero(
-      'WORKSPACE / ACTIVITY',
-      '调用记录',
-      '查看本机网关内存中最近的 Agent 工具发现、调用与拦截记录（重启后自动清空，不落盘敏感参数）。',
+      t('logs.kicker'),
+      t('logs.title'),
+      t('logs.sub'),
       actions(
         autoCheck,
-        btn('刷新记录', (e) => run(e, () => loadLogs(), '已刷新调用记录')),
+        btn(t('logs.refresh'), (e) => run(e, () => loadLogs(), t('toast.logsRefreshed'))),
         logs.length
-          ? btn(
-              '清空记录',
-              (e) => run(e, () => request('logs', 'DELETE'), '调用记录已清空'),
-              'danger'
-            )
+          ? btn(t('logs.clear'), (e) => run(e, () => request('logs', 'DELETE'), t('toast.logsCleared')), 'danger')
           : null
       )
     ),
     panel(
-      '最近活动',
-      actions(sourceSelect, el('span', { class: 'sub' }, `${filtered.length} / ${logs.length} 条`)),
-      rows.length
-        ? rows
-        : empty('暂无调用记录', '当 Agent 通过 MCP Shelf 查询或调用工具，或在「工具目录」试调后，这里会显示实时记录。')
+      t('logs.panel'),
+      actions(
+        sourceSelect,
+        el('span', { class: 'sub' }, t('logs.count', { shown: filtered.length, total: logs.length }))
+      ),
+      rows.length ? rows : empty(t('logs.emptyTitle'), t('logs.emptyDesc'))
     )
   ];
 }
@@ -787,19 +818,13 @@ function meta() {
       el(
         'div',
         { class: 'inside' },
-        el(
-          'p',
-          {},
-          m.name === 'call_tool'
-            ? '建议保留副作用及用户确认要求。'
-            : '文案不改变工具名、参数或权限。'
-        ),
+        el('p', {}, m.name === 'call_tool' ? t('meta.callToolNote') : t('meta.otherNote')),
         input
       )
     );
   });
   const save = btn(
-    '保存元工具描述',
+    t('meta.save'),
     (e) =>
       run(
         e,
@@ -809,36 +834,28 @@ function meta() {
             'PUT',
             Object.fromEntries(Object.entries(areas).map(([k, v]) => [k, v.value]))
           ),
-        '元工具描述已保存'
+        t('toast.metaSaved')
       ),
     'primary'
   );
-  const fill = btn('恢复默认文案', () => {
+  const fill = btn(t('meta.reset'), () => {
     for (const [k, v] of Object.entries(areas)) v.value = state.defaults[k];
-    toast('已填入默认文案，保存后生效。');
+    toast(t('toast.metaFilled'));
   });
   const reminderPanel = panel(
-    '实时服务摘要预览（自动注入给 Agent）',
-    pill('指纹 ' + (state.fingerprint || '—'), 'ok'),
+    t('meta.reminderTitle'),
+    pill(t('meta.fingerprint', { fp: state.fingerprint || '—' }), 'ok'),
     el(
       'div',
       { class: 'inside' },
-      el(
-        'p',
-        {},
-        '以下精简清单会自动附带在 MCP 握手 instructions 及 list_mcps / search_tool 描述中，让 Agent 开局即可感知已挂载服务；修改连接或授权后将通过 tools/list_changed 自动通知客户端。'
-      ),
-      el(
-        'pre',
-        { class: 'snippet' },
-        state.serverReminder || '（当前尚无已启用且已开放工具的连接）'
-      )
+      el('p', {}, t('meta.reminderDesc')),
+      el('pre', { class: 'snippet' }, state.serverReminder || t('meta.reminderEmpty'))
     )
   );
   return [
-    hero('SETTINGS / META-TOOLS', '元工具描述', '自定义三个元工具在 Agent 里显示的文案。', save),
+    hero(t('meta.kicker'), t('meta.title'), t('meta.sub'), save),
     el('div', { class: 'stack' }, reminderPanel, ...cards),
-    hint('变更会自动触发 tools/list_changed 通知；不支持热刷新的客户端请重新连接或打开新会话。'),
+    hint(t('meta.hint')),
     fill
   ];
 }
@@ -853,13 +870,13 @@ function snippet(title, description, content) {
       el('p', {}, description),
       el('pre', { class: 'snippet' }, content),
       btn(
-        '复制',
+        t('clients.copy'),
         async () => {
           try {
             await navigator.clipboard.writeText(content);
-            toast('已复制');
+            toast(t('toast.copied'));
           } catch {
-            toast('复制失败，请手动选择文本。', true);
+            toast(t('toast.copyFailed'), true);
           }
         },
         'mini'
@@ -907,12 +924,12 @@ function clients() {
   const remoteUrl = state.remoteEndpoint || 'http://127.0.0.1:' + state.port + '/mcp';
   const tokenBox = el('div');
   const tokenPanel = panel(
-    state.mode === 'remote' ? '远端实例与访问凭证' : '当前实例信息',
+    state.mode === 'remote' ? t('clients.infoRemote') : t('clients.infoLocal'),
     actions(
-      pill(state.mode === 'remote' ? '远程模式' : '127.0.0.1:' + state.port, 'ok'),
+      pill(state.mode === 'remote' ? t('clients.remoteMode') : '127.0.0.1:' + state.port, 'ok'),
       state.mode === 'remote'
         ? btn(
-            '退出登录',
+            t('clients.logout'),
             async () => {
               await request('auth/logout', 'POST');
               location.reload();
@@ -924,7 +941,7 @@ function clients() {
     el(
       'div',
       { class: 'inside' },
-      el('p', {}, '配置文件路径（权限 0600，Bearer Token 保存在此文件中）：'),
+      el('p', {}, t('clients.configPath')),
       el('code', { class: 'mono' }, state.configFile || '~/.config/mcp-shelf/config.json'),
       state.mode === 'remote'
         ? el(
@@ -932,7 +949,7 @@ function clients() {
             { style: 'margin-top:12px' },
             actions(
               btn(
-                '显示并复制 MCP Token',
+                t('clients.showToken'),
                 async (e) => {
                   const target = e.currentTarget;
                   target.disabled = true;
@@ -941,9 +958,9 @@ function clients() {
                     tokenBox.replaceChildren(el('pre', { class: 'snippet' }, res.token));
                     try {
                       await navigator.clipboard.writeText(res.token);
-                      toast('已显示并复制 MCP Bearer Token');
+                      toast(t('toast.tokenCopied'));
                     } catch {
-                      toast('已显示 MCP Bearer Token，请手动复制');
+                      toast(t('toast.tokenShown'));
                     }
                   } catch (err) {
                     toast(err.message, true);
@@ -954,15 +971,15 @@ function clients() {
                 'mini'
               ),
               btn(
-                '轮换 Token',
+                t('clients.rotateToken'),
                 async (e) => {
-                  if (!confirm('确认轮换 MCP Bearer Token？轮换后旧设备将立即失效，需更新为新 Token。')) return;
+                  if (!confirm(t('clients.confirmRotate'))) return;
                   const target = e.currentTarget;
                   target.disabled = true;
                   try {
                     const res = await request('token/rotate', 'POST');
                     tokenBox.replaceChildren(el('pre', { class: 'snippet' }, res.token));
-                    toast('Token 已轮换，旧凭证已失效。');
+                    toast(t('toast.tokenRotated'));
                   } catch (err) {
                     toast(err.message, true);
                   } finally {
@@ -982,41 +999,41 @@ function clients() {
     state.mode === 'remote'
       ? [
           snippet(
-            '远端 Streamable HTTP（跨设备通用）',
-            '在任意设备的 MCP 客户端直连此端点，配合 Bearer Token 鉴权（建议前置于 Caddy / NPM HTTPS 反代）。',
+            t('clients.remoteHttpTitle'),
+            t('clients.remoteHttpDesc'),
             remoteUrl + '\nAuthorization: Bearer <MCP_SHELF_TOKEN>'
           ),
           snippet(
-            'Grok Build（连接此远端服务器）',
-            '在任意电脑终端执行，将 MCP_SHELF_TOKEN 设为上方 Token。',
+            t('clients.remoteGrokTitle'),
+            t('clients.remoteGrokDesc'),
             `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)} --header 'Authorization: Bearer \${MCP_SHELF_TOKEN}'`
           ),
           snippet(
-            'Claude Code（连接此远端服务器）',
-            '在任意电脑终端添加远端 HTTP MCP。',
+            t('clients.remoteClaudeTitle'),
+            t('clients.remoteClaudeDesc'),
             `claude mcp add --transport http mcp-shelf ${quote(remoteUrl)} --header 'Authorization: Bearer <MCP_SHELF_TOKEN>'`
           )
         ]
       : [];
 
   return [
-    hero('SETTINGS / CLIENTS', '接入 Agent', '保持网关运行，每个客户端只注册 MCP Shelf。'),
+    hero(t('clients.kicker'), t('clients.title'), t('clients.sub')),
     el(
       'div',
       { class: 'stack' },
       tokenPanel,
       ...remoteSnippets,
-      snippet('Grok Build（本机 stdio）', '在终端注册本机 stdio Bridge 到 ~/.grok/config.toml。', gr),
-      snippet('Codex（本机 stdio）', '将片段合并到 Codex 的 config.toml。', toml),
-      snippet('Claude Code（本机 stdio）', '在终端添加 stdio Bridge。', cl),
+      snippet(t('clients.grokTitle'), t('clients.grokDesc'), gr),
+      snippet(t('clients.codexTitle'), t('clients.codexDesc'), toml),
+      snippet(t('clients.claudeTitle'), t('clients.claudeDesc'), cl),
       snippet(
-        'Google Antigravity',
-        '在 Manage MCP Servers 打开原始配置，合并 mcpServers 里的这一项。',
+        t('clients.agyTitle'),
+        t('clients.agyDesc'),
         JSON.stringify({ mcpServers: { 'mcp-shelf': config } }, null, 2)
       ),
       snippet(
-        'Streamable HTTP（本机直连）',
-        '支持自定义请求头的 MCP 客户端可直连；Bearer 取自本机 config.json。',
+        t('clients.localHttpTitle'),
+        t('clients.localHttpDesc'),
         'http://127.0.0.1:' + state.port + '/mcp\nAuthorization: Bearer <LOCAL_CONFIG_TOKEN>'
       )
     )
@@ -1024,7 +1041,11 @@ function clients() {
 }
 
 function render() {
-  $('#crumb').textContent = routes[view];
+  if (needsLogin) {
+    renderLogin();
+    return;
+  }
+  $('#crumb').textContent = t(routeKeys[view]);
   for (const b of document.querySelectorAll('nav button')) {
     if (b.dataset.view === view) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
@@ -1058,16 +1079,16 @@ function openEditor(s, button) {
   f('enabled').checked = s ? s.enabled : true;
   f('args').value = s?.args ? JSON.stringify(s.args) : '';
   f('envKeys').value = s?.envKeys?.join(', ') || '';
-  $('#form-title').textContent = s ? '编辑连接' : '添加连接';
+  $('#form-title').textContent = s ? t('dialog.editTitle') : t('dialog.addTitle');
   $('#error').textContent = '';
   $('#delete-source')?.remove();
   if (s) {
     const remove = btn(
-      '删除连接',
+      t('dialog.delete'),
       (e) => {
-        if (confirm('删除此本地连接？上游服务不会被修改。')) {
+        if (confirm(t('dialog.confirmDelete'))) {
           dialog.close();
-          void run(e, () => request('servers/' + s.id, 'DELETE'), '连接已删除');
+          void run(e, () => request('servers/' + s.id, 'DELETE'), t('toast.deleted'));
         }
       },
       'danger'
@@ -1093,7 +1114,7 @@ form.addEventListener('submit', async (e) => {
       args = JSON.parse(f('args').value || '[]');
       if (!Array.isArray(args) || args.some((x) => typeof x !== 'string')) throw Error();
     } catch {
-      error.textContent = '参数必须是 JSON 字符串数组。';
+      error.textContent = t('dialog.argsError');
       return;
     }
   }
@@ -1115,7 +1136,7 @@ form.addEventListener('submit', async (e) => {
     dialog.close();
     await load();
     render();
-    toast(r.permissions_reset ? '连接已保存，旧工具授权已清除。' : '连接已保存。');
+    toast(r.permissions_reset ? t('toast.savedReset') : t('toast.saved'));
   } catch (err) {
     if (dialog.open) error.textContent = err.message;
     else toast(err.message, true);
@@ -1159,7 +1180,7 @@ $('#import-check').addEventListener('click', async () => {
             'div',
             { class: 'import-item-head' },
             el('strong', { class: 'mono' }, `${server.id} (${server.transport})`),
-            pill(conflict ? '已存在，将跳过' : '将导入', conflict ? 'warn' : 'ok')
+            pill(conflict ? t('import.conflict') : t('import.willImport'), conflict ? 'warn' : 'ok')
           ),
           el('div', { class: 'sub mono' }, server.transport === 'stdio' ? server.command : server.url),
           ...warnings.map((w) => el('div', { class: 'warn-note' }, w))
@@ -1173,14 +1194,21 @@ $('#import-check').addEventListener('click', async () => {
             'div',
             { class: 'import-item-head' },
             el('strong', { class: 'mono' }, s.id),
-            pill('跳过', 'bad')
+            pill(t('import.skipped'), 'bad')
           ),
           el('div', { class: 'sub' }, s.reason)
         )
       )
     );
     importPreview.replaceChildren(
-      el('div', { class: 'sub' }, `识别格式：${res.format.toUpperCase()} · 可导入 ${res.items.filter((x) => !x.conflict).length} 项`),
+      el(
+        'div',
+        { class: 'sub' },
+        t('import.summary', {
+          format: res.format.toUpperCase(),
+          count: res.items.filter((x) => !x.conflict).length
+        })
+      ),
       list
     );
     importPreview.hidden = false;
@@ -1201,8 +1229,8 @@ importForm.addEventListener('submit', async (e) => {
     render();
     toast(
       res.imported.length
-        ? `已导入 ${res.imported.length} 个连接（${res.imported.join(', ')}）`
-        : '没有新连接可导入（可能均已存在或被跳过）。',
+        ? t('toast.imported', { count: res.imported.length, ids: res.imported.join(', ') })
+        : t('toast.importNone'),
       !res.imported.length
     );
   } catch (err) {
@@ -1212,8 +1240,20 @@ importForm.addEventListener('submit', async (e) => {
   }
 });
 
+// Language switcher
+const langSelect = $('#lang-select');
+for (const loc of LOCALES) {
+  langSelect.append(el('option', { value: loc.code }, loc.label));
+}
+langSelect.addEventListener('change', async (e) => {
+  await setLocale(e.target.value, true);
+  applyStaticTranslations();
+  updateInstanceChrome();
+  if (state || needsLogin) render();
+});
+
 async function switchView(nextView, pushHash = true) {
-  if (!Object.hasOwn(routes, nextView) || !state) return;
+  if (!Object.hasOwn(routeKeys, nextView) || !state) return;
   view = nextView;
   if (pushHash && location.hash !== '#' + view) {
     history.replaceState(null, '', '#' + view);
@@ -1236,7 +1276,7 @@ document.querySelector('nav').addEventListener('click', (e) => {
 
 window.addEventListener('hashchange', () => {
   const next = location.hash.slice(1);
-  if (Object.hasOwn(routes, next) && next !== view) {
+  if (Object.hasOwn(routeKeys, next) && next !== view) {
     void switchView(next, false);
   }
 });
@@ -1255,14 +1295,15 @@ document.addEventListener('keydown', (e) => {
 });
 
 function renderLogin() {
+  needsLogin = true;
   const pwd = el('input', {
     type: 'password',
     required: true,
     autocomplete: 'current-password',
-    placeholder: '输入 MCP_SHELF_ADMIN_PASSWORD'
+    placeholder: t('login.placeholder')
   });
   const errEl = el('p', { class: 'err', role: 'alert' });
-  const submit = el('button', { type: 'submit', class: 'primary' }, '解锁工作台');
+  const submit = el('button', { type: 'submit', class: 'primary' }, t('login.submit'));
   const loginForm = el(
     'form',
     {
@@ -1283,20 +1324,24 @@ function renderLogin() {
         }
       }
     },
-    el('div', { class: 'kicker' }, 'REMOTE WORKBENCH'),
-    el('h2', {}, '登录 MCP Shelf 管理台'),
-    el('p', { class: 'sub' }, '当前实例运行在远程模式，需要管理密码解锁。'),
-    el('label', {}, '管理密码', pwd),
+    el('div', { class: 'kicker' }, t('login.kicker')),
+    el('h2', {}, t('login.title')),
+    el('p', { class: 'sub' }, t('login.sub')),
+    el('label', {}, t('login.password'), pwd),
     errEl,
     actions(submit)
   );
-  $('#crumb').textContent = '身份验证';
+  $('#crumb').textContent = t('login.title');
   $('#content').replaceChildren(el('div', { class: 'login-wrap' }, loginForm));
   $('#content').removeAttribute('aria-busy');
   pwd.focus();
 }
 
 async function boot() {
+  const initialLang = detectLocale();
+  await setLocale(initialLang, false);
+  langSelect.value = getLocale();
+  applyStaticTranslations();
   try {
     await load();
     if (view === 'logs') await loadLogs();
@@ -1307,7 +1352,7 @@ async function boot() {
       renderLogin();
     } else {
       $('#content').replaceChildren(
-        empty('无法连接本地网关', e.message, btn('重试', () => location.reload()))
+        empty(t('error.offlineTitle'), e.message, btn(t('error.retry'), () => location.reload()))
       );
     }
   }

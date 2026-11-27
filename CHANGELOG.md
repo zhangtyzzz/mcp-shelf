@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-11-27
+
+### Added
+- **Extensible Internationalization (i18n)**: Zero-dependency i18n framework (`ui/i18n.js` + `ui/locales/*.js`) defaulting to English (`en`) with built-in Simplified Chinese (`zh-CN`), live language switcher in the top bar, `localStorage` persistence, and auto-discovered locale packs on the server.
+- **Bilingual Documentation**: English default `README.md`, full Chinese `README.zh-CN.md`, and English `CONTRIBUTING.md` with translation contributor guide.
+- **Generic Discovery Improvements**: Server summary injected across all three meta-tool descriptions (`list_mcps`, `search_tool`, `call_tool`) plus a generic `how_to_call` hint in `search_tool` results.
+
 ## [0.4.0] - 2026-11-27
 
 ### Added

@@ -203,7 +203,7 @@ test('config import (JSON and Codex TOML), refresh-all, tool playground, activit
   enabled: true
  }, 201);
  const failRefresh = await f.api('servers/missing-bin/refresh', 'POST', undefined, 502);
- assert.match(failRefresh.error, /找不到可执行文件/);
+ assert.match(failRefresh.error, /executable not found/i);
 
  // 7. Health check, sanitized export, CJK bigram search recall, and schemaHash
  const health = await (await fetch(f.app.url + '/healthz')).json();

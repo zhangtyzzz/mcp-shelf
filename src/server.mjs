@@ -64,6 +64,7 @@ const assetDefs = {
   '/': ['index.html', 'text/html'],
   '/style.css': ['style.css', 'text/css'],
   '/app.js': ['app.js', 'text/javascript'],
+  '/i18n.js': ['i18n.js', 'text/javascript'],
   '/icon.svg': ['icon.svg', 'image/svg+xml']
 };
 
@@ -73,6 +74,19 @@ const assetCache = new Map(
     { type: type + '; charset=utf-8', bytes: fs.readFileSync(new URL('../ui/' + file, import.meta.url)) }
   ])
 );
+
+// Preload all locale packs from ui/locales/*.js automatically
+const localesDir = new URL('../ui/locales/', import.meta.url);
+if (fs.existsSync(localesDir)) {
+  for (const file of fs.readdirSync(localesDir)) {
+    if (/^[A-Za-z0-9_-]+\.js$/.test(file)) {
+      assetCache.set('/locales/' + file, {
+        type: 'text/javascript; charset=utf-8',
+        bytes: fs.readFileSync(new URL(file, localesDir))
+      });
+    }
+  }
+}
 
 const SESSION_COOKIE = 'mcp_shelf_session';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
