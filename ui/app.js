@@ -78,6 +78,8 @@ let allowOnly = false;
 let logSourceFilter = '';
 let logAutoRefresh = false;
 let logPollTimer = null;
+let clientMode = null;
+let clientAgent = 'grok';
 let toastTimer;
 let editing;
 let originButton;
@@ -380,7 +382,7 @@ function sources() {
         : empty(
             t('sources.emptyTitle'),
             t('sources.emptyDesc'),
-            btn(t('sources.loadDemo'), (e) => run(e, () => request('demo', 'POST'), t('toast.demoLoaded')))
+            btn(t('sources.templates'), (e) => openTemplates(e.currentTarget), 'primary')
           )
     ),
     hint(t('sources.hint'))
@@ -1252,38 +1254,207 @@ function clients() {
   );
 
   const sseUrl = remoteUrl.replace(/\/mcp$/, '/sse');
-  return [
-    hero(t('clients.kicker'), t('clients.title'), t('clients.sub')),
+  const activeMode = clientMode || (state.mode === 'remote' ? 'oauth' : 'stdio');
+
+  const modes = [
+    { id: 'stdio', label: t('clients.mode.stdio') },
+    { id: 'oauth', label: t('clients.mode.oauth') },
+    { id: 'http', label: t('clients.mode.http') },
+    { id: 'sse', label: t('clients.mode.sse') }
+  ];
+
+  const agentsByMode = {
+    stdio: ['grok', 'codex', 'claude', 'agy'],
+    oauth: ['grok', 'claude', 'generic'],
+    http: ['grok', 'claude', 'codex', 'agy', 'generic'],
+    sse: ['generic', 'claude', 'agy']
+  };
+
+  const allowedAgents = agentsByMode[activeMode] || ['generic'];
+  const activeAgent = allowedAgents.includes(clientAgent) ? clientAgent : allowedAgents[0];
+
+  function resolveSnippet(modeId, agentId) {
+    if (modeId === 'stdio') {
+      if (agentId === 'grok') return { desc: t('clients.grokDesc'), code: gr };
+      if (agentId === 'codex') return { desc: t('clients.codexDesc'), code: toml };
+      if (agentId === 'claude') return { desc: t('clients.claudeDesc'), code: cl };
+      return {
+        desc: t('clients.agyDesc'),
+        code: JSON.stringify({ mcpServers: { 'mcp-shelf': config } }, null, 2)
+      };
+    }
+    if (modeId === 'oauth') {
+      if (agentId === 'grok') {
+        return {
+          desc: t('clients.oauthDesc'),
+          code: `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)}`
+        };
+      }
+      if (agentId === 'claude') {
+        return {
+          desc: t('clients.oauthDesc'),
+          code: `claude mcp add --transport http mcp-shelf ${quote(remoteUrl)}`
+        };
+      }
+      return {
+        desc: t('clients.oauthDesc'),
+        code: `${remoteUrl}\n# OAuth 2.1 + PKCE auto-discovered via /.well-known/oauth-protected-resource`
+      };
+    }
+    if (modeId === 'http') {
+      if (agentId === 'grok') {
+        return {
+          desc: t('clients.remoteGrokDesc'),
+          code: `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)} --header 'Authorization: Bearer \${MCP_SHELF_TOKEN}'`
+        };
+      }
+      if (agentId === 'claude') {
+        return {
+          desc: t('clients.remoteClaudeDesc'),
+          code: `claude mcp add --transport http mcp-shelf ${quote(remoteUrl)} --header 'Authorization: Bearer <MCP_SHELF_TOKEN>'`
+        };
+      }
+      if (agentId === 'codex') {
+        return {
+          desc: t('clients.remoteHttpDesc'),
+          code: `[mcp_servers.mcp_shelf]\nurl = ${JSON.stringify(remoteUrl)}\nbearer_token_env_var = "MCP_SHELF_TOKEN"`
+        };
+      }
+      if (agentId === 'agy') {
+        return {
+          desc: t('clients.agyDesc'),
+          code: JSON.stringify(
+            {
+              mcpServers: {
+                'mcp-shelf': {
+                  serverUrl: remoteUrl,
+                  headers: { Authorization: 'Bearer <MCP_SHELF_TOKEN>' }
+                }
+              }
+            },
+            null,
+            2
+          )
+        };
+      }
+      return {
+        desc: state.mode === 'remote' ? t('clients.remoteHttpDesc') : t('clients.localHttpDesc'),
+        code: `${remoteUrl}\nAuthorization: Bearer <MCP_SHELF_TOKEN>`
+      };
+    }
+    // Legacy SSE
+    if (agentId === 'claude') {
+      return {
+        desc: t('clients.sseDesc'),
+        code: `claude mcp add --transport sse mcp-shelf ${quote(sseUrl)} --header 'Authorization: Bearer <MCP_SHELF_TOKEN>'`
+      };
+    }
+    if (agentId === 'agy') {
+      return {
+        desc: t('clients.sseDesc'),
+        code: JSON.stringify(
+          {
+            mcpServers: {
+              'mcp-shelf': {
+                url: sseUrl,
+                headers: { Authorization: 'Bearer <MCP_SHELF_TOKEN>' }
+              }
+            }
+          },
+          null,
+          2
+        )
+      };
+    }
+    return {
+      desc: t('clients.sseDesc'),
+      code: `${sseUrl}\nAuthorization: Bearer <MCP_SHELF_TOKEN>`
+    };
+  }
+
+  const currentSnip = resolveSnippet(activeMode, activeAgent);
+
+  const setupPanel = panel(
+    t('clients.setupTitle'),
+    btn(
+      t('clients.copy'),
+      async () => {
+        try {
+          await navigator.clipboard.writeText(currentSnip.code);
+          toast(t('toast.copied'));
+        } catch {
+          toast(t('toast.copyFailed'), true);
+        }
+      },
+      'mini primary'
+    ),
     el(
       'div',
-      { class: 'stack' },
-      tokenPanel,
-      profilesPanel,
-      snippet(
-        t('clients.oauthTitle'),
-        t('clients.oauthDesc'),
-        `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)}`
+      { class: 'inside' },
+      el(
+        'div',
+        { class: 'seg-wrap' },
+        el(
+          'div',
+          { class: 'seg-row' },
+          el('span', { class: 'seg-label' }, t('clients.modeLabel')),
+          el(
+            'div',
+            { class: 'segmented', role: 'tablist', 'aria-label': t('clients.modeLabel') },
+            ...modes.map((m) =>
+              el(
+                'button',
+                {
+                  type: 'button',
+                  role: 'tab',
+                  'aria-selected': String(m.id === activeMode),
+                  on: {
+                    click: () => {
+                      clientMode = m.id;
+                      render();
+                    }
+                  }
+                },
+                m.label
+              )
+            )
+          )
+        ),
+        el(
+          'div',
+          { class: 'seg-row' },
+          el('span', { class: 'seg-label' }, t('clients.agentLabel')),
+          el(
+            'div',
+            { class: 'segmented', role: 'tablist', 'aria-label': t('clients.agentLabel') },
+            ...allowedAgents.map((aid) =>
+              el(
+                'button',
+                {
+                  type: 'button',
+                  role: 'tab',
+                  'aria-selected': String(aid === activeAgent),
+                  on: {
+                    click: () => {
+                      clientAgent = aid;
+                      render();
+                    }
+                  }
+                },
+                t('clients.agent.' + aid)
+              )
+            )
+          )
+        )
       ),
-      ...remoteSnippets,
-      snippet(t('clients.grokTitle'), t('clients.grokDesc'), gr),
-      snippet(t('clients.codexTitle'), t('clients.codexDesc'), toml),
-      snippet(t('clients.claudeTitle'), t('clients.claudeDesc'), cl),
-      snippet(
-        t('clients.agyTitle'),
-        t('clients.agyDesc'),
-        JSON.stringify({ mcpServers: { 'mcp-shelf': config } }, null, 2)
-      ),
-      snippet(
-        t('clients.localHttpTitle'),
-        t('clients.localHttpDesc'),
-        'http://127.0.0.1:' + state.port + '/mcp\nAuthorization: Bearer <LOCAL_CONFIG_TOKEN>'
-      ),
-      snippet(
-        t('clients.sseTitle'),
-        t('clients.sseDesc'),
-        sseUrl + '\nAuthorization: Bearer <MCP_SHELF_TOKEN>'
-      )
+      el('div', { class: 'snippet-bar' }, el('p', {}, currentSnip.desc)),
+      el('pre', { class: 'snippet' }, currentSnip.code)
     )
+  );
+
+  return [
+    hero(t('clients.kicker'), t('clients.title'), t('clients.sub')),
+    el('div', { class: 'stack' }, setupPanel, profilesPanel, tokenPanel)
   ];
 }
 

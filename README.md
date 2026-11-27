@@ -43,31 +43,22 @@ cd MCP-Shelf
 npm ci
 ```
 
-### Option A: Offline Demo (No External Credentials Needed)
-
-```sh
-npm run demo
-```
-
-Opens an isolated temporary instance on **http://127.0.0.1:8787** with pre-approved `demo/echo` and `demo/add` tools.
-
-### Option B: Local Gateway (Default `MCP_SHELF_MODE=local`)
+### Option A: Local Gateway (Default `MCP_SHELF_MODE=local`)
 
 ```sh
 npm start
 ```
 
 Open **http://127.0.0.1:8787**:
-1. In **Connections**, add local `stdio` or remote `Streamable HTTP` servers — or click **Import** to paste existing `mcpServers` JSON or Codex `config.toml`.
+1. In **Connections**, click **Templates** to one-click add classic servers (like free **Exa Search**, **Context7 Docs**, **Sequential Thinking**, or **GitHub OAuth**), or click **Import** to paste existing `mcpServers` JSON / Codex `config.toml`.
 2. Click **Fetch Tools**, review and approve tools in **Tool Catalog**, and test them directly in the built-in **Playground**.
-3. Open **Connect Agents** to copy ready-to-use snippets for Grok Build, Codex, Claude Code, Google Antigravity, or Streamable HTTP.
+3. Open **Connect Agents** to pick your transport mode (**Local stdio**, **OAuth 2.1**, **Streamable HTTP**, or **Legacy SSE**) and client, then copy the generated snippet.
 
 Optional global CLI link:
 
 ```sh
 npm link
 mcp-shelf          # Start local gateway
-mcp-shelf demo     # Start offline demo
 mcp-shelf config   # Print local config.json path
 ```
 
@@ -77,7 +68,7 @@ Custom port or config directory:
 MCP_SHELF_PORT=8788 MCP_SHELF_HOME=~/.config/mcp-shelf-alt npm start
 ```
 
-### Option C: Self-Hosted Docker Deployment (`MCP_SHELF_MODE=remote`)
+### Option B: Self-Hosted Docker Deployment (`MCP_SHELF_MODE=remote`)
 
 Prebuilt multi-arch (`linux/amd64`, `linux/arm64`) images are automatically published to GHCR:
 - `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — stable releases (`master` branch & `vX.Y.Z` tags)

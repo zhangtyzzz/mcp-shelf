@@ -22,7 +22,7 @@ function detectBrowser() {
 }
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelf-ui-'));
-const app = await launch({ dir, port: 0 });
+const app = await launch({ dir, port: 0, demo: true });
 const c = new Client({ name: 'ui-test', version: '1' });
 let browser;
 
@@ -42,13 +42,12 @@ try {
   await p.locator('#lang-select').selectOption('en');
   await p.getByRole('heading', { name: 'Connections', exact: true }).waitFor();
 
-  await p.getByRole('button', { name: 'Load Offline Demo' }).click();
+  await p.getByRole('button', { name: 'Fetch Tools', exact: true }).click();
   await p.getByText('Connected', { exact: true }).waitFor();
 
-  // Tools view: allow, edit description (details stays open across save), search, and playground test
+  // Tools view: edit description (details stays open across save), search, and playground test
   await p.getByRole('button', { name: /Tool Catalog/ }).click();
   const echo = p.locator('.tool').filter({ has: p.getByRole('heading', { name: 'demo/echo', exact: true }) });
-  await echo.getByRole('button', { name: 'Allow', exact: true }).click();
   await echo.getByText('Allowed', { exact: true }).waitFor();
   await echo.getByText('Schema & Playground', { exact: true }).click();
   await echo.getByRole('textbox', { name: 'Override description for demo/echo' }).fill('Echo <img src=x onerror=alert(1)>');
@@ -84,7 +83,7 @@ try {
   await c.connect(httpClient(app.url + '/mcp', { Authorization: 'Bearer ' + app.config.get().token }));
   const listedTools = await c.listTools();
   assert.ok(listedTools.tools[1].description.startsWith('Custom search description'));
-  assert.match(listedTools.tools[1].description, /Connected MCP servers:\n- demo \(1 tool\):/);
+  assert.match(listedTools.tools[1].description, /Connected MCP servers:\n- demo \(2 tools\):/);
   assert.deepEqual(
     (await c.callTool({ name: 'call_tool', arguments: { tool_id: 'demo/echo', arguments: { text: 'UI → MCP' } } }))
       .structuredContent,
@@ -98,9 +97,12 @@ try {
   await p.getByRole('button', { name: 'Clear', exact: true }).click();
   await p.getByText('No activity yet', { exact: true }).waitFor();
 
-  // Clients view & Access Profile creation + mobile layout check (no horizontal overflow)
+  // Clients view: segmented controls (Mode x Client) & Access Profile creation + mobile layout check
   await p.getByRole('button', { name: /Connect Agents/ }).click();
-  await p.getByRole('heading', { name: 'Google Antigravity' }).waitFor();
+  await p.getByRole('tab', { name: 'Google Antigravity', exact: true }).click();
+  await p.getByText('"mcpServers"').waitFor();
+  await p.getByRole('tab', { name: 'OAuth 2.1', exact: true }).click();
+  await p.getByText('grok mcp add --transport http').waitFor();
   await p.getByRole('button', { name: '+ New Profile' }).click();
   const pd = p.getByRole('dialog');
   await pd.getByLabel('Profile ID').fill('vps-demo');

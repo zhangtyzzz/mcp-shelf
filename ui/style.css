@@ -93,7 +93,7 @@ aside {
   background: var(--glass);
   backdrop-filter: blur(28px) saturate(140%);
   -webkit-backdrop-filter: blur(28px) saturate(140%);
-  box-shadow: var(--shadow-float), var(--glass-highlight);
+  box-shadow: var(--shadow-float), 0 0 0 1px var(--glass-border), var(--glass-highlight);
   padding: 20px 12px 14px;
   display: flex;
   flex-direction: column;
@@ -234,6 +234,9 @@ i.live {
 
 /* Top bar */
 .top {
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
   padding: 16px 34px 10px;
   min-height: 54px;
   display: flex;
@@ -265,30 +268,34 @@ i.live {
   gap: 8px;
 }
 
-.lang-select {
-  width: auto !important;
-  padding: 4px 10px !important;
-  border-radius: 999px !important;
-  border: 1px solid rgba(255, 255, 255, 0.9) !important;
-  background: var(--glass-strong) !important;
-  box-shadow: var(--shadow-xs), var(--glass-highlight) !important;
+select.lang-select {
+  width: auto;
+  height: 28px;
+  padding: 0 26px 0 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background-color: var(--glass-strong);
+  background-position: right 9px center;
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--glass-border), var(--glass-highlight);
   font-size: 11.5px;
+  line-height: 1;
   color: var(--ink-2);
-  cursor: pointer;
 }
 
 .tag {
+  height: 28px;
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: 999px;
   background: var(--glass-strong);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  box-shadow: var(--shadow-xs), var(--glass-highlight);
+  box-shadow: var(--shadow-xs), 0 0 0 1px var(--glass-border), var(--glass-highlight);
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 4px 11px;
+  padding: 0 11px;
   font-size: 11.5px;
+  line-height: 1;
   font-family: var(--mono);
   color: var(--ink-2);
   white-space: nowrap;
@@ -418,7 +425,7 @@ p.muted {
   -webkit-backdrop-filter: blur(24px) saturate(140%);
   border: 1px solid rgba(255, 255, 255, 0.86);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-glass), var(--glass-highlight);
+  box-shadow: var(--shadow-glass), 0 0 0 1px var(--glass-border), var(--glass-highlight);
   overflow: hidden;
 }
 
@@ -469,6 +476,11 @@ p.muted {
   gap: 12px;
   align-items: center;
   justify-content: space-between;
+}
+
+.panel-head .sub {
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
 }
 
 .row {
@@ -543,20 +555,24 @@ code {
   align-items: center;
   padding: 3px 10px;
   border-radius: 999px;
+  border: 1px solid var(--glass-border);
   background: rgba(42, 36, 28, 0.055);
   color: var(--ink-2);
   font-size: 11.5px;
+  line-height: 1.35;
   font-weight: 560;
   white-space: nowrap;
 }
 
 .pill.ok {
   background: var(--ok-bg);
+  border-color: rgba(43, 100, 77, 0.18);
   color: var(--ok-ink);
 }
 
 .pill.warn {
   background: var(--amber-bg);
+  border-color: var(--amber-line);
   color: var(--amber);
 }
 
@@ -568,6 +584,7 @@ code {
 
 .pill.bad {
   background: var(--red-bg);
+  border-color: var(--red-line);
 }
 
 .warn-note {
@@ -624,12 +641,28 @@ code {
   margin-bottom: 14px;
 }
 
-.filters input {
+.filters input:first-child {
   flex: 1;
+  padding-left: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16' fill='none'%3E%3Ccircle cx='7.25' cy='7.25' r='4.75' stroke='%236e6a63' stroke-width='1.5'/%3E%3Cpath d='M10.8 10.8L13.75 13.75' stroke='%236e6a63' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: left 12px center;
+  background-size: 14px 14px;
 }
 
 .filters select {
   max-width: 196px;
+}
+
+.filters .check {
+  height: 38px;
+  padding: 0 9px 0 6px;
+  border-radius: 10px;
+  transition: background-color 0.14s ease;
+}
+
+.filters .check:hover {
+  background: rgba(42, 36, 28, 0.045);
 }
 
 .check {
@@ -642,12 +675,32 @@ code {
   cursor: pointer;
 }
 
-.check input {
-  accent-color: var(--accent);
+.check input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
   width: 16px;
   height: 16px;
   margin: 0;
+  border-radius: 5px;
+  border: 1px solid var(--glass-border-strong);
+  background-color: rgba(255, 254, 252, 0.92);
+  box-shadow: inset 0 1px 2px rgba(34, 28, 20, 0.04);
   cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.check input[type="checkbox"]:hover {
+  border-color: rgba(42, 36, 28, 0.28);
+}
+
+.check input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10' fill='none'%3E%3Cpath d='M2 5.2L4.1 7.3L8.2 2.8' stroke='%23fdfbf7' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  box-shadow: 0 1px 3px rgba(46, 80, 115, 0.28);
 }
 
 /* Tool cards */
@@ -740,6 +793,8 @@ code {
   content: "▸";
   display: inline-block;
   font-size: 11px;
+  line-height: 1;
+  transform-origin: 45% 50%;
   transition: transform 0.16s ease;
 }
 
@@ -752,7 +807,10 @@ code {
 }
 
 .tool details > p.sub {
-  margin-top: 12px;
+  margin: 14px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
 }
 
 .tool details label {
@@ -855,7 +913,7 @@ code {
   -webkit-backdrop-filter: blur(24px) saturate(140%);
   border: 1px solid rgba(255, 255, 255, 0.86);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-glass), var(--glass-highlight);
+  box-shadow: var(--shadow-glass), 0 0 0 1px var(--glass-border), var(--glass-highlight);
   margin-bottom: 14px;
 }
 
@@ -867,10 +925,85 @@ code {
   color: var(--ink-2);
 }
 
-.auto-select {
-  width: auto !important;
-  padding: 5px 10px !important;
+select.auto-select {
+  width: auto;
+  height: 32px;
+  padding: 0 28px 0 10px;
+  background-position: right 9px center;
   font-size: 12.5px;
+}
+
+/* Segmented controls (macOS 26 style) */
+.seg-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.seg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.seg-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 64px;
+}
+
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(42, 36, 28, 0.055);
+  border: 1px solid var(--glass-border);
+}
+
+.segmented button {
+  border: 1px solid transparent;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border-radius: 9px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 540;
+  color: var(--ink-2);
+}
+
+.segmented button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--ink);
+}
+
+.segmented button[aria-selected="true"] {
+  background: #ffffff;
+  border-color: var(--accent-border);
+  color: var(--accent);
+  font-weight: 620;
+  box-shadow: 0 1px 4px rgba(34, 28, 20, 0.08), var(--glass-highlight);
+}
+
+.snippet-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.snippet-bar p {
+  margin: 0;
 }
 
 .token-controls {
@@ -1019,24 +1152,52 @@ select {
   width: 100%;
   border: 1px solid var(--glass-border-strong);
   border-radius: 11px;
-  background: rgba(255, 254, 252, 0.9);
+  background-color: rgba(255, 254, 252, 0.9);
   padding: 8px 11px;
   color: var(--ink);
   box-shadow: inset 0 1px 2px rgba(34, 28, 20, 0.025);
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
+input:not([type="checkbox"]),
+select {
+  height: 38px;
+}
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%236e6a63' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 12px 12px;
+}
+
+input:not([type="checkbox"]):hover:not(:focus):not(:disabled),
+textarea:hover:not(:focus):not(:disabled),
+select:hover:not(:focus):not(:disabled) {
+  border-color: rgba(42, 36, 28, 0.24);
+  background-color: #ffffff;
+}
+
 input:not([type="checkbox"]):focus,
 textarea:focus,
 select:focus {
   outline: none;
-  background: #ffffff;
+  background-color: #ffffff;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3.5px var(--accent-ring);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+::placeholder {
+  color: var(--muted);
+  opacity: 0.72;
 }
 
 input[readonly] {
-  background: rgba(42, 36, 28, 0.045);
+  background-color: rgba(42, 36, 28, 0.045);
   color: var(--muted);
 }
 
@@ -1068,6 +1229,7 @@ label select {
 dialog {
   width: min(650px, calc(100% - 28px));
   padding: 0;
+  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.88);
   border-radius: var(--radius-lg);
   color: var(--ink);

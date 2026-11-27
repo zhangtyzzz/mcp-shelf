@@ -41,31 +41,22 @@ cd MCP-Shelf
 npm ci
 ```
 
-### 方式 A：先跑离线 Demo 体验（推荐）
-
-```sh
-npm run demo
-```
-
-这会启动一个使用临时目录的实例并预置离线回显/加法示例，打开 **http://127.0.0.1:8787** 即可直接体验管理台与在线试调（不会修改你的正式配置）。
-
-### 方式 B：正式启动本机网关
+### 方式 A：正式启动本机网关（默认 `MCP_SHELF_MODE=local`）
 
 ```sh
 npm start
 ```
 
 打开 **http://127.0.0.1:8787**：
-1. 在 **连接管理** 新增 `stdio` / `Streamable HTTP` 上游，或点击 **导入配置** 直接粘贴已有 `mcpServers` JSON / Codex `config.toml`。
+1. 在 **连接管理** 点击 **精选模板** 一键添加常用 MCP（如免费的 **Exa Search**、**Context7**、**Sequential Thinking**、**GitHub OAuth**），或点击 **导入配置** 粘贴已有 `mcpServers` JSON / Codex `config.toml`。
 2. 点击 **读取工具** 完成握手发现，在 **工具目录** 逐个或批量开放工具，并可直接 **在线试调** 验证参数与返回。
-3. 打开 **接入 Agent** 一键复制对应客户端配置片段（Codex / Claude Code / Google Antigravity / Streamable HTTP）。
+3. 打开 **接入 Agent** 选择接入模式（**本机 stdio** / **OAuth 2.1** / **Streamable HTTP** / **传统 SSE**）和对应客户端，一键复制配置。
 
 也可以全局链接为命令行工具：
 
 ```sh
 npm link
 mcp-shelf          # 正式启动
-mcp-shelf demo     # 启动离线示例
 mcp-shelf config   # 打印本机配置文件路径
 ```
 
@@ -75,7 +66,7 @@ mcp-shelf config   # 打印本机配置文件路径
 MCP_SHELF_PORT=8788 MCP_SHELF_HOME=~/.config/mcp-shelf-alt npm start
 ```
 
-### 方式 C：Docker 远程自部署（跨设备访问 + Caddy / NPM 反代）
+### 方式 B：Docker 远程自部署（跨设备访问 + Caddy / NPM 反代）
 
 GitHub Actions 自动构建并推送多架构（`linux/amd64`, `linux/arm64`）镜像至 GHCR：
 - `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — 稳定版镜像（`master` 分支与 `vX.Y.Z` Tag）
