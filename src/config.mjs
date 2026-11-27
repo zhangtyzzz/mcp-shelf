@@ -5,7 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.8.4';
+export const APP_VERSION = '0.8.5';
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));
 export const DEFAULT_DIR = () => path.join(os.homedir(), '.config', APP_NAME);
@@ -49,6 +49,15 @@ export function publicUrlFromEnv() {
 }
 
 export const adminPasswordFromEnv = () => String(process.env.MCP_SHELF_ADMIN_PASSWORD || '');
+
+export function oauthAccessTtlSecondsFromEnv() {
+  const raw = String(process.env.MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS ?? '86400').trim();
+  const ttl = Number(raw);
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(ttl) || ttl > 2_592_000) {
+    throw new Error('MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS must be an integer from 1 to 2592000.');
+  }
+  return ttl;
+}
 
 export const rec = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 export const serverId = /^[a-z][a-z0-9_-]{0,47}$/;

@@ -83,6 +83,8 @@ export MCP_SHELF_PUBLIC_URL=https://mcp.example.com
 docker compose up -d
 ```
 
+MCP Shelf 签给客户端的 OAuth 访问令牌默认有效 24 小时。可在 Docker 环境中设置 `MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS`，调整新签发令牌的有效期。已签发的访问令牌按原时间到期。支持刷新令牌的 OAuth 客户端可以自动续期。刷新令牌每次使用都会轮换，有效期从首次授权起最长 30 天。
+
 Caddy 反向代理示例见 [deploy/Caddyfile.example](deploy/Caddyfile.example)：
 
 ```caddy

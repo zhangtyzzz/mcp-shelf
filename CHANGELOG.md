@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.5] - 2026-11-28
+
+### Security
+- **Client OAuth token lifetime and rotation**: New access tokens default to 24 hours and use `MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS` for overrides. OAuth clients can renew with rotating refresh tokens that are bound to the original grant, expire after 30 days, and are revoked on reuse. Previously issued access tokens retain their original expiry.
+
 ## [0.8.4] - 2026-11-28
 
 ### Fixed

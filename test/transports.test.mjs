@@ -9,6 +9,22 @@ import { launch, httpClient, demoSource } from '../src/main.mjs';
 
 test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password check, PKCE verify, scoped token)', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelf-oauth-srv-'));
+  const ttlEnv = process.env.MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS;
+  delete process.env.MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS;
+  t.after(() => {
+    if (ttlEnv !== undefined) process.env.MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS = ttlEnv;
+  });
+  const storeDir = path.join(dir, 'oauth');
+  const storePath = path.join(storeDir, '_server.json');
+  const legacyToken = 'legacy-access-token';
+  const legacyHash = createHash('sha256').update(legacyToken).digest('hex');
+  const legacyExpiry = Date.now() + 30 * 24 * 60 * 60 * 1000;
+  fs.mkdirSync(storeDir, { mode: 0o700 });
+  fs.writeFileSync(storePath, JSON.stringify({
+    version: 1,
+    clients: { 'legacy-client': { client_id: 'legacy-client', redirect_uris: ['http://127.0.0.1:19999/cb'] } },
+    tokens: { [legacyHash]: { clientId: 'legacy-client', profileId: null, exp: legacyExpiry } }
+  }), { mode: 0o600 });
   const app = await launch({
     dir,
     port: 0,
@@ -37,6 +53,7 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   assert.equal(asm.token_endpoint, app.url + '/oauth/token');
   assert.equal(asm.registration_endpoint, app.url + '/oauth/register');
   assert.deepEqual(asm.code_challenge_methods_supported, ['S256']);
+  assert.deepEqual(asm.grant_types_supported, ['authorization_code', 'refresh_token']);
 
   // 3. Dynamic Client Registration rejects unsafe redirect_uri (including non-loopback http://) and accepts loopback
   for (const badUri of ['javascript:alert(1)', 'http://attacker.example/cb', 'blob:https://example.com/1']) {
@@ -172,6 +189,10 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   const tokData = await tokRes.json();
   assert.equal(tokData.token_type, 'Bearer');
   assert.ok(tokData.access_token.length === 64);
+  assert.equal(tokData.expires_in, 86400);
+  assert.ok(tokData.refresh_token);
+  assert.equal(tokRes.headers.get('cache-control'), 'no-store');
+  assert.equal(tokRes.headers.get('pragma'), 'no-cache');
 
   // 6. Connect MCP client with OAuth access_token — strictly scoped to `only-demo`
   const mcpClient = new Client({ name: 'oauth-mcp-client', version: '1' });
@@ -194,10 +215,11 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   await mcpClient.close();
 
   // 7. Persisted OAuth clients & SHA-256-hashed tokens survive full server restart
-  const storePath = path.join(dir, 'oauth', '_server.json');
   assert.equal(fs.statSync(storePath).mode & 0o777, 0o600);
   const rawStore = fs.readFileSync(storePath, 'utf8');
   assert.ok(!rawStore.includes(tokData.access_token), 'raw access_token must not be stored in plaintext');
+  assert.ok(!rawStore.includes(tokData.refresh_token), 'raw refresh_token must not be stored in plaintext');
+  assert.equal(JSON.parse(rawStore).tokens[legacyHash].exp, legacyExpiry);
 
   await app.close();
   const restarted = await launch({
@@ -221,6 +243,33 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   assert.deepEqual(echoedAfter, { echo: 'survived-restart' });
   await mcpAfterRestart.close();
 
+  const bearerGet = (resource, token) => fetch(restarted.url + resource, { headers: { Authorization: 'Bearer ' + token } });
+  assert.equal((await bearerGet('/mcp', legacyToken)).status, 405, 'legacy access token still authenticates');
+  const refresh = (refresh_token, overrides = {}) => fetch(restarted.url + '/oauth/token', {
+    method: 'POST',
+    body: new URLSearchParams({ grant_type: 'refresh_token', client_id: client.client_id, refresh_token, ...overrides })
+  });
+  for (const [overrides, error] of [
+    [{ client_id: 'legacy-client' }, 'invalid_grant'],
+    [{ scope: 'mcp:admin' }, 'invalid_scope'],
+    [{ resource: restarted.url + '/mcp/other' }, 'invalid_target']
+  ]) {
+    const rejected = await refresh(tokData.refresh_token, overrides);
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json()).error, error);
+  }
+  const suffix = tokData.refresh_token.endsWith('a') ? 'b' : 'a';
+  const forged = await refresh(tokData.refresh_token.slice(0, -1) + suffix);
+  assert.equal(forged.status, 400);
+
+  const rotatedResponse = await refresh(tokData.refresh_token);
+  assert.equal(rotatedResponse.status, 200);
+  const rotated = await rotatedResponse.json();
+  assert.notEqual(rotated.access_token, tokData.access_token);
+  assert.notEqual(rotated.refresh_token, tokData.refresh_token);
+  assert.equal((await bearerGet('/mcp/only-demo', rotated.access_token)).status, 405);
+  assert.equal((await bearerGet('/mcp/other', rotated.access_token)).status, 401);
+
   // 8. Rotating profile token revokes profile-scoped OAuth access tokens, and logout revokes session cookie
   const reLogin = await fetch(restarted.url + '/api/auth/login', {
     method: 'POST',
@@ -229,6 +278,37 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   });
   const reCookie = (reLogin.headers.get('set-cookie') || '').split(';')[0];
   const reSt = await (await fetch(restarted.url + '/api/state', { headers: { Cookie: reCookie } })).json();
+
+  const otherGrantUrl = new URL(authUrl.pathname + authUrl.search, restarted.url);
+  const profileResource = restarted.url + '/mcp/only-demo';
+  otherGrantUrl.searchParams.set('resource', profileResource);
+  const anotherForm = await (await fetch(otherGrantUrl, { headers: { Cookie: reCookie } })).text();
+  const anotherNonce = /name="nonce"\s+value="([^"]+)"/.exec(anotherForm)?.[1];
+  assert.ok(anotherNonce);
+  const anotherApproval = await fetch(restarted.url + '/oauth/authorize', {
+    method: 'POST', redirect: 'manual',
+    body: new URLSearchParams({ nonce: anotherNonce, decision: 'approve', password: 'super-strong-admin-pass-123', profile_id: 'only-demo' })
+  });
+  assert.equal(anotherApproval.status, 302);
+  const anotherCode = new URL(anotherApproval.headers.get('location')).searchParams.get('code');
+  const anotherExchange = await fetch(restarted.url + '/oauth/token', {
+    method: 'POST', body: new URLSearchParams({
+      grant_type: 'authorization_code', code: anotherCode, client_id: client.client_id,
+      redirect_uri: 'http://127.0.0.1:19999/cb', code_verifier: verifier, resource: profileResource
+    })
+  });
+  assert.equal(anotherExchange.status, 200);
+  const otherGrant = await anotherExchange.json();
+  assert.equal((await bearerGet('/mcp/only-demo', otherGrant.access_token)).status, 405);
+  assert.equal((await bearerGet('/mcp', otherGrant.access_token)).status, 401);
+
+  const replay = await refresh(tokData.refresh_token);
+  assert.equal(replay.status, 400);
+  assert.equal((await replay.json()).error, 'invalid_grant');
+  assert.equal((await bearerGet('/mcp/only-demo', rotated.access_token)).status, 401);
+  assert.equal((await refresh(rotated.refresh_token)).status, 400);
+  assert.equal((await bearerGet('/mcp/only-demo', otherGrant.access_token)).status, 405);
+
   const rotRes = await fetch(restarted.url + '/api/profiles/only-demo/rotate', {
     method: 'POST',
     headers: { Cookie: reCookie, 'X-Shelf-CSRF': reSt.csrf }
@@ -239,6 +319,8 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
     headers: { Authorization: 'Bearer ' + tokData.access_token }
   });
   assert.equal(revokedMcp.status, 401);
+  assert.equal((await bearerGet('/mcp/only-demo', otherGrant.access_token)).status, 401);
+  assert.equal((await refresh(otherGrant.refresh_token)).status, 400);
 
   // Blocked protected env var names (MCP_SHELF_ADMIN_PASSWORD)
   const blockedEnv = await fetch(restarted.url + '/api/servers', {

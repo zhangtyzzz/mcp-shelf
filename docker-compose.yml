@@ -22,6 +22,8 @@ services:
       # Optional: your public HTTPS URL (for reverse-proxy Host/Origin checks, OAuth metadata & client snippets).
       # Leave empty when testing over plain HTTP or a raw IP; set to e.g. https://mcp.example.com behind Caddy/Nginx.
       MCP_SHELF_PUBLIC_URL: "${MCP_SHELF_PUBLIC_URL:-}"
+      # Lifetime in seconds for newly issued MCP Shelf OAuth access tokens (default 24 hours).
+      MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS: "${MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS:-86400}"
       # Pass upstream MCP credentials via env vars (never written into config.json):
       # GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       # LINEAR_API_KEY: "${LINEAR_API_KEY:-}"

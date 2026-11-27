@@ -28,6 +28,7 @@ import {
   hostFromEnv,
   modeFromEnv,
   normalizeSettings,
+  oauthAccessTtlSecondsFromEnv,
   openConfig,
   parseImportConfig,
   portFromEnv,
@@ -231,6 +232,7 @@ export async function launch({
       '远程模式必须设置至少 12 位的 MCP_SHELF_ADMIN_PASSWORD 环境变量以保护管理台。'
     );
   }
+  const accessTtlSeconds = oauthAccessTtlSecondsFromEnv();
 
   const cfg = openConfig(dir);
   const oauthStore = new OAuthStore(dir, () =>
@@ -246,13 +248,14 @@ export async function launch({
     cfg,
     auth,
     isRemote,
+    accessTtlSeconds,
     dir,
     clientKey: auth?.clientKey
   });
   const publicHost = publicUrl ? new URL(publicUrl).host : '';
   const publicOrigin = publicUrl ? new URL(publicUrl).origin : '';
 
-  const resolveAccess = (authHeader, expectedProfileId = null) => {
+  const resolveAccess = (authHeader, expectedProfileId = null, resource = null) => {
     const raw = String(authHeader || '');
     if (!raw.startsWith('Bearer ')) return null;
     const tok = raw.slice(7);
@@ -266,6 +269,7 @@ export async function launch({
     const oauthHit = oauthServer.resolveToken(tok);
     if (oauthHit) {
       if (expectedProfileId && oauthHit.profile?.id !== expectedProfileId) return null;
+      if (resource && oauthHit.resource && oauthHit.resource !== resource) return null;
       return { profile: oauthHit.profile, rawToken: tok };
     }
     return null;
@@ -469,6 +473,7 @@ export async function launch({
           retryUrl.searchParams.set('code_challenge', result.flow.codeChallenge);
           retryUrl.searchParams.set('code_challenge_method', 'S256');
           if (result.flow.state) retryUrl.searchParams.set('state', result.flow.state);
+          if (result.flow.resource) retryUrl.searchParams.set('resource', result.flow.resource);
           const html = oauthServer.renderAuthorizePage(req, retryUrl, 'Invalid admin password.');
           res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin' });
           return res.end(html);
@@ -490,18 +495,20 @@ export async function launch({
         return res.end();
       }
       if (method === 'POST' && route === '/oauth/token') {
-        return json(200, await oauthServer.handleToken(req));
+        res.setHeader('Pragma', 'no-cache');
+        return json(200, await oauthServer.handleToken(req, reqOrigin));
       }
 
       // MCP Streamable HTTP endpoint (supports /mcp and profile-scoped /mcp/<profile_id>)
       const mcpMatch = /^\/mcp(?:\/([a-z][a-z0-9_-]{0,47}))?$/.exec(route);
       if (mcpMatch) {
         const expectedProfileId = mcpMatch[1] || null;
-        const access = resolveAccess(req.headers.authorization, expectedProfileId);
+        const access = resolveAccess(req.headers.authorization, expectedProfileId, reqOrigin + route);
         if (!access) {
+          const invalidToken = req.headers.authorization?.startsWith('Bearer ') ? 'error="invalid_token", ' : '';
           res.setHeader(
             'WWW-Authenticate',
-            `Bearer resource_metadata="${reqOrigin}/.well-known/oauth-protected-resource${route}"`
+            `Bearer ${invalidToken}resource_metadata="${reqOrigin}/.well-known/oauth-protected-resource${route}"`
           );
           return json(401, { error: 'Bearer token required.' });
         }
@@ -866,6 +873,7 @@ export async function launch({
 
       return json(404, { error: 'Not found.' });
     } catch (e) {
+      if (e.oauthError) return json(e.status, { error: e.oauthError, error_description: e.message });
       return json(e.status || 500, { error: e.status ? e.message : 'Request failed.' });
     }
   });

@@ -83,6 +83,8 @@ export MCP_SHELF_PUBLIC_URL=https://mcp.example.com
 docker compose up -d
 ```
 
+MCP Shelf OAuth access tokens default to 24 hours. Set `MCP_SHELF_OAUTH_ACCESS_TTL_SECONDS` in the Docker environment to override the lifetime for newly issued tokens. Previously issued access tokens keep their original expiry. OAuth clients that support token refresh can renew automatically. Refresh tokens rotate on use and expire 30 days after authorization.
+
 See [deploy/Caddyfile.example](deploy/Caddyfile.example) for a 5-line automatic HTTPS reverse proxy config.
 
 **Remote Mode Security:**

@@ -1,13 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
-import { fail, rec, same, token } from './config.mjs';
+import { createHash, createHmac } from 'node:crypto';
+import { fail, rec, same, serverId, token } from './config.mjs';
 
 const CODE_TTL_MS = 5 * 60_000;
-const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const FORM_TTL_MS = 10 * 60_000;
 const MAX_CLIENTS = 200;
 const MAX_TOKENS = 200;
+const MAX_REFRESH_GRANTS = 200;
 const MAX_FORMS = 200;
 const MAX_CODES = 200;
 const DCR_WINDOW_MS = 60 * 60_000;
@@ -24,6 +25,20 @@ const BLOCKED_SCHEMES = new Set([
   'wss:'
 ]);
 const PKCE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43,128}$/;
+const REFRESH_TOKEN_RE = /^shelf_rt_([0-9a-f]{32})\.([0-9a-f]{64})\.([0-9a-f]{64})$/;
+const HASH_RE = /^[0-9a-f]{64}$/;
+const GRANT_ID_RE = /^[0-9a-f]{32}$/;
+const TOOL_SCOPE = 'mcp:tools';
+const GRANT_TYPES = ['authorization_code', 'refresh_token'];
+const tokenError = (oauthError, message) => Object.assign(fail(message), { oauthError });
+
+function resourceFor(value, origin) {
+  if (value == null) return null;
+  const base = origin + '/mcp';
+  if (value === base) return value;
+  if (typeof value === 'string' && value.startsWith(base + '/') && serverId.test(value.slice(base.length + 1))) return value;
+  throw tokenError('invalid_target', 'Unrecognized MCP resource.');
+}
 
 function esc(s) {
   return String(s || '')
@@ -88,7 +103,7 @@ async function readFormOrJson(req) {
  * to authenticate against MCP Shelf without manually copying Bearer tokens.
  */
 export class ShelfOAuthServer {
-  constructor({ cfg, auth, isRemote, dir = null, clientKey = null }) {
+  constructor({ cfg, auth, isRemote, accessTtlSeconds, dir = null, clientKey = null }) {
     this.cfg = cfg;
     this.auth = auth;
     this.isRemote = isRemote;
@@ -99,26 +114,23 @@ export class ShelfOAuthServer {
     this.forms = new Map();
     this.codes = new Map();
     this.dcrAttempts = new Map();
-    // Map<sha256(accessToken), { clientId, profileId, exp }>
+    this.accessTtlMs = accessTtlSeconds * 1000;
+    this.replayKey = token();
     this.tokens = new Map();
+    this.refreshGrants = new Map();
     this._load();
   }
 
   revokeByProfile(profileId) {
-    let changed = false;
-    for (const [h, t] of this.tokens) {
-      if ((profileId === null && t.profileId === null) || (profileId !== null && t.profileId === profileId)) {
-        this.tokens.delete(h);
-        changed = true;
-      }
+    const tokens = new Map([...this.tokens].filter(([, t]) => t.profileId !== profileId));
+    const refreshGrants = new Map([...this.refreshGrants].filter(([, grant]) => grant.profileId !== profileId));
+    if (tokens.size !== this.tokens.size || refreshGrants.size !== this.refreshGrants.size) {
+      this._save({ tokens, refreshGrants });
     }
-    if (changed) this._save();
   }
 
   revokeAll() {
-    if (!this.tokens.size) return;
-    this.tokens.clear();
-    this._save();
+    if (this.tokens.size || this.refreshGrants.size) this._save({ tokens: new Map(), refreshGrants: new Map() });
   }
 
   _load() {
@@ -133,13 +145,26 @@ export class ShelfOAuthServer {
           }
         }
       }
+      if (typeof raw.replayKey === 'string' && HASH_RE.test(raw.replayKey) && rec(raw.refreshGrants)) {
+        this.replayKey = raw.replayKey;
+        for (const [id, grant] of Object.entries(raw.refreshGrants)) {
+          if (GRANT_ID_RE.test(id) && rec(grant) && typeof grant.exp === 'number' && grant.exp > now &&
+            this.clients.has(grant.clientId) && HASH_RE.test(grant.refreshHash) &&
+            (grant.profileId === null || typeof grant.profileId === 'string') &&
+            (grant.resource === null || typeof grant.resource === 'string')) {
+            this.refreshGrants.set(id, grant);
+          }
+        }
+      }
       if (rec(raw.tokens)) {
         for (const [h, t] of Object.entries(raw.tokens)) {
-          if (rec(t) && typeof t.exp === 'number' && t.exp > now) {
+          if (HASH_RE.test(h) && rec(t) && typeof t.exp === 'number' && t.exp > now &&
+            (t.grantId === undefined || this.refreshGrants.has(t.grantId))) {
             this.tokens.set(h, {
               clientId: String(t.clientId || ''),
               profileId: typeof t.profileId === 'string' ? t.profileId : null,
-              exp: t.exp
+              exp: t.exp,
+              ...(t.grantId && { grantId: t.grantId })
             });
           }
         }
@@ -149,27 +174,30 @@ export class ShelfOAuthServer {
     }
   }
 
-  _save() {
-    if (!this.storePath) return;
+  _save({ tokens = this.tokens, refreshGrants = this.refreshGrants } = {}) {
     const now = Date.now();
-    for (const [h, t] of this.tokens) {
-      if (t.exp <= now) this.tokens.delete(h);
-    }
-    const dir = path.dirname(this.storePath);
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const tmp = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
-    const payload = JSON.stringify(
-      {
-        version: 1,
+    const grants = new Map([...refreshGrants].filter(([, grant]) => grant.exp > now));
+    const access = new Map([...tokens].filter(([, t]) => t.exp > now && (!t.grantId || grants.has(t.grantId))));
+    if (this.storePath) {
+      const dir = path.dirname(this.storePath);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const tmp = `${this.storePath}.${token()}.tmp`;
+      const payload = JSON.stringify({
+        version: 2,
         clients: Object.fromEntries(this.clients),
-        tokens: Object.fromEntries(this.tokens)
-      },
-      null,
-      2
-    );
-    fs.writeFileSync(tmp, payload + '\n', { mode: 0o600 });
-    fs.chmodSync(tmp, 0o600);
-    fs.renameSync(tmp, this.storePath);
+        tokens: Object.fromEntries(access),
+        refreshGrants: Object.fromEntries(grants),
+        replayKey: this.replayKey
+      }, null, 2);
+      try {
+        fs.writeFileSync(tmp, payload + '\n', { flag: 'wx', mode: 0o600 });
+        fs.renameSync(tmp, this.storePath);
+      } finally {
+        fs.rmSync(tmp, { force: true });
+      }
+    }
+    this.tokens = access;
+    this.refreshGrants = grants;
   }
 
   resolveToken(rawToken) {
@@ -177,14 +205,15 @@ export class ShelfOAuthServer {
     const h = hashToken(rawToken);
     const recEntry = this.tokens.get(h);
     if (!recEntry) return null;
-    if (Date.now() > recEntry.exp) {
+    if (Date.now() >= recEntry.exp) {
       this.tokens.delete(h);
       this._save();
       return null;
     }
-    if (!recEntry.profileId) return { profile: null };
+    const resource = this.refreshGrants.get(recEntry.grantId)?.resource || null;
+    if (!recEntry.profileId) return { profile: null, resource };
     const pr = (this.cfg.get().profiles || []).find((p) => p.id === recEntry.profileId);
-    return pr ? { profile: pr } : null;
+    return pr ? { profile: pr, resource } : null;
   }
 
   protectedResourceMetadata(origin, resourcePath = '/mcp') {
@@ -192,7 +221,7 @@ export class ShelfOAuthServer {
       resource: origin + resourcePath,
       authorization_servers: [origin],
       bearer_methods_supported: ['header'],
-      scopes_supported: ['mcp:tools']
+      scopes_supported: [TOOL_SCOPE]
     };
   }
 
@@ -203,10 +232,10 @@ export class ShelfOAuthServer {
       token_endpoint: origin + '/oauth/token',
       registration_endpoint: origin + '/oauth/register',
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: GRANT_TYPES,
       code_challenge_methods_supported: ['S256'],
       token_endpoint_auth_methods_supported: ['none'],
-      scopes_supported: ['mcp:tools']
+      scopes_supported: [TOOL_SCOPE]
     };
   }
 
@@ -232,7 +261,8 @@ export class ShelfOAuthServer {
       throw fail('Valid redirect_uris array is required.');
     }
     if (this.clients.size >= MAX_CLIENTS) {
-      const activeClientIds = new Set([...this.tokens.values()].map((t) => t.clientId));
+      const activeClientIds = new Set([...this.tokens.values(), ...this.refreshGrants.values()]
+        .filter((record) => record.exp > now).map((record) => record.clientId));
       let evicted = false;
       for (const cid of this.clients.keys()) {
         if (!activeClientIds.has(cid)) {
@@ -248,7 +278,7 @@ export class ShelfOAuthServer {
       client_id: clientId,
       client_name: typeof body.client_name === 'string' ? body.client_name.slice(0, 120) : 'MCP Client',
       redirect_uris: uris,
-      grant_types: ['authorization_code'],
+      grant_types: GRANT_TYPES,
       response_types: ['code'],
       token_endpoint_auth_method: 'none',
       client_id_issued_at: Math.floor(Date.now() / 1000)
@@ -264,6 +294,7 @@ export class ShelfOAuthServer {
     const redirectUri = q.get('redirect_uri') || '';
     const responseType = q.get('response_type') || '';
     const state = q.get('state') || '';
+    const resource = q.get('resource');
     const codeChallenge = q.get('code_challenge') || '';
     const codeChallengeMethod = q.get('code_challenge_method') || 'S256';
 
@@ -293,6 +324,7 @@ export class ShelfOAuthServer {
       clientId,
       redirectUri,
       state,
+      resource,
       codeChallenge,
       at: now
     });
@@ -387,6 +419,7 @@ export class ShelfOAuthServer {
       clientId: flow.clientId,
       redirectUri: flow.redirectUri,
       codeChallenge: flow.codeChallenge,
+      resource: flow.resource,
       profileId,
       exp: nowMs + CODE_TTL_MS
     });
@@ -396,10 +429,67 @@ export class ShelfOAuthServer {
     return { redirect: redirect.href };
   }
 
-  async handleToken(req) {
+  _refreshProof(grantId, secret) {
+    // Authenticate previously issued tokens without storing a list of spent secrets.
+    return createHmac('sha256', this.replayKey).update(`${grantId}.${secret}`).digest('hex');
+  }
+
+  _issueTokens(grantId, grant, now) {
+    const secret = token();
+    const refreshToken = `shelf_rt_${grantId}.${secret}.${this._refreshProof(grantId, secret)}`;
+    const refreshGrants = new Map(this.refreshGrants);
+    refreshGrants.set(grantId, { ...grant, refreshHash: hashToken(refreshToken) });
+    const tokens = new Map([...this.tokens].filter(([, entry]) => entry.exp > now));
+    if (tokens.size >= MAX_TOKENS) tokens.delete(tokens.keys().next().value);
+    const accessToken = token();
+    const exp = Math.min(now + this.accessTtlMs, grant.exp);
+    tokens.set(hashToken(accessToken), { grantId, clientId: grant.clientId, profileId: grant.profileId, exp });
+    this._save({ tokens, refreshGrants });
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      token_type: 'Bearer',
+      expires_in: Math.ceil((exp - now) / 1000),
+      scope: TOOL_SCOPE
+    };
+  }
+
+  _refreshTokens(body, origin) {
+    const raw = body.refresh_token;
+    const parsed = typeof raw === 'string' && REFRESH_TOKEN_RE.exec(raw);
+    if (!parsed) throw tokenError('invalid_grant', 'Invalid or expired refresh token.');
+    const [, grantId, secret, proof] = parsed;
+    const grant = this.refreshGrants.get(grantId);
+    const now = Date.now();
+    if (!grant || grant.exp <= now || !same(body.client_id, grant.clientId) ||
+      !this.clients.has(grant.clientId) ||
+      (grant.profileId && !this.cfg.get().profiles.some((profile) => profile.id === grant.profileId)) ||
+      !same(proof, this._refreshProof(grantId, secret))) {
+      throw tokenError('invalid_grant', 'Invalid or expired refresh token.');
+    }
+    if (!same(hashToken(raw), grant.refreshHash)) {
+      // Only an authentic, previously issued token with the same client can revoke the family.
+      const refreshGrants = new Map(this.refreshGrants);
+      refreshGrants.delete(grantId);
+      this._save({ refreshGrants });
+      throw tokenError('invalid_grant', 'Refresh token already used. Authorize this client again.');
+    }
+    const resource = resourceFor(body.resource, origin);
+    if (resource && resource !== (grant.resource || origin + '/mcp')) {
+      throw tokenError('invalid_target', 'Resource does not match the original grant.');
+    }
+    if (body.scope !== undefined && body.scope !== TOOL_SCOPE) {
+      throw tokenError('invalid_scope', 'Scope does not match the original grant.');
+    }
+    return this._issueTokens(grantId, grant, now);
+  }
+
+  async handleToken(req, origin) {
     const body = await readFormOrJson(req);
+    if (!rec(body)) throw tokenError('invalid_request', 'Invalid token request.');
+    if (body.grant_type === 'refresh_token') return this._refreshTokens(body, origin);
     if (body.grant_type !== 'authorization_code') {
-      throw fail('Unsupported grant_type.', 400);
+      throw tokenError('unsupported_grant_type', 'Unsupported grant_type.');
     }
     const code = String(body.code || '');
     const clientId = String(body.client_id || '');
@@ -408,32 +498,30 @@ export class ShelfOAuthServer {
 
     const recCode = this.codes.get(code);
     this.codes.delete(code);
-    if (!recCode || Date.now() > recCode.exp) {
-      throw fail('Invalid or expired authorization code.', 400);
+    const now = Date.now();
+    if (!recCode || now >= recCode.exp || !this.clients.has(clientId)) {
+      throw tokenError('invalid_grant', 'Invalid or expired authorization code.');
     }
     if (!same(clientId, recCode.clientId) || !same(redirectUri, recCode.redirectUri)) {
-      throw fail('Client or redirect_uri mismatch.', 400);
+      throw tokenError('invalid_grant', 'Client or redirect_uri mismatch.');
     }
     if (!verifier || !same(s256(verifier), recCode.codeChallenge)) {
-      throw fail('Invalid PKCE code_verifier.', 400);
+      throw tokenError('invalid_grant', 'Invalid PKCE code_verifier.');
     }
 
-    if (this.tokens.size >= MAX_TOKENS) {
-      this.tokens.delete(this.tokens.keys().next().value);
+    const resource = resourceFor(recCode.resource, origin);
+    const tokenResource = resourceFor(body.resource, origin);
+    if (resource && tokenResource && resource !== tokenResource) {
+      throw tokenError('invalid_target', 'Resource does not match the authorization request.');
     }
-    const accessToken = token();
-    this.tokens.set(hashToken(accessToken), {
+    if ([...this.refreshGrants.values()].filter((grant) => grant.exp > now).length >= MAX_REFRESH_GRANTS) {
+      throw fail('Maximum active OAuth grants reached.', 429);
+    }
+    return this._issueTokens(token().slice(0, 32), {
       clientId,
       profileId: recCode.profileId,
-      exp: Date.now() + TOKEN_TTL_MS
-    });
-    this._save();
-
-    return {
-      access_token: accessToken,
-      token_type: 'Bearer',
-      expires_in: Math.floor(TOKEN_TTL_MS / 1000),
-      scope: 'mcp:tools'
-    };
+      resource: resource || tokenResource,
+      exp: now + REFRESH_TTL_MS
+    }, now);
   }
 }
