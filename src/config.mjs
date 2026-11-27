@@ -84,11 +84,11 @@ export const array = (a, check, label, n) => {
 
 export const defaults = {
   list_mcps:
-    'List enabled upstream MCP servers and a preview of approved tools. Use search_tool to discover tools and fetch their input schemas.',
+    'List enabled upstream MCP servers proxied by MCP Shelf and a preview of approved tools. Use MCP Shelf search_tool to discover tools and MCP Shelf call_tool to invoke them.',
   search_tool:
-    'Search approved upstream MCP tools by keyword or exact tool_id. Returns matching tools with their full inputSchema by default (pass include_schema=false for compact names only) so you can call them directly via call_tool.',
+    'Search approved upstream MCP tools proxied by MCP Shelf by keyword or exact tool_id. Returns matching tools with their full inputSchema by default (pass include_schema=false for compact names only). Important: returned tool_ids (like "context7/query-docs") are NOT host tools — always invoke them through MCP Shelf call_tool({ tool_id, arguments }).',
   call_tool:
-    'Call one approved tool by its exact tool_id and JSON arguments matching the inputSchema returned by search_tool. Never guess parameter names. This can change real state; obtain needed user approval first and never blindly retry a failed write.'
+    'Proxy-invoke one approved upstream tool behind MCP Shelf using { tool_id, arguments } where tool_id is the exact "server/tool" ID and arguments match the inputSchema returned by MCP Shelf search_tool. Never guess parameter names. Obtain needed user approval for writes and never blindly retry a failed write.'
 };
 
 export function descriptions(v) {

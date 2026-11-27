@@ -185,7 +185,7 @@ export class Catalog {
   metaInstructions() {
     const reminder = this.serverReminder();
     const usage =
-      'To use upstream MCP tools, call `search_tool` to find relevant tools and retrieve their exact inputSchema, then call `call_tool` with the exact namespaced `tool_id`. Never guess parameter names.';
+      'Upstream tools behind MCP Shelf are proxied and NOT registered directly on the host. Always discover them with MCP Shelf `search_tool` and invoke them via MCP Shelf `call_tool({ tool_id, arguments })`. Never call `server/tool` or `server__tool` directly on the host.';
     return reminder ? `${reminder}\n\n${usage}` : usage;
   }
 
@@ -193,10 +193,7 @@ export class Catalog {
     const reminder = this.serverReminder();
     return meta.map((t) => {
       const base = descs[t.name];
-      const description =
-        reminder && (t.name === 'list_mcps' || t.name === 'search_tool')
-          ? `${base}\n\n${reminder}`
-          : base;
+      const description = reminder ? `${base}\n\n${reminder}` : base;
       return { ...t, description };
     });
   }
@@ -452,7 +449,16 @@ export class Catalog {
     if (id) {
       const [s, r] = rows[0] || [];
       const t = r?.tools.find((t) => allowed(s, t) && s.id + '/' + t.name === tool_id);
-      const out = { matches: t ? [this.view(s, t, true)] : [], total: t ? 1 : 0, next_offset: null };
+      const out = {
+        matches: t ? [this.view(s, t, true)] : [],
+        total: t ? 1 : 0,
+        next_offset: null,
+        ...(t
+          ? {
+              how_to_call: `Call MCP Shelf call_tool with {"tool_id":"${tool_id}","arguments":{...}}. Do NOT invoke "${tool_id}" directly as a host tool.`
+            }
+          : {})
+      };
       this.record({
         source: 'agent',
         action: 'search_tool',
@@ -496,11 +502,17 @@ export class Catalog {
       }
     }
     ranked.sort((a, b) => b.score - a.score || a.row.tool_id.localeCompare(b.row.tool_id, 'en'));
+    const matches = ranked.slice(offset, offset + limit).map((x) => x.row);
     const out = {
-      matches: ranked.slice(offset, offset + limit).map((x) => x.row),
+      matches,
       total: ranked.length,
       next_offset: offset + limit < ranked.length ? offset + limit : null,
-      unavailable_servers: rows.filter(([, r]) => r?.status === 'error').map(([s]) => s.id)
+      unavailable_servers: rows.filter(([, r]) => r?.status === 'error').map(([s]) => s.id),
+      ...(matches.length
+        ? {
+            how_to_call: `Invoke matched tools through MCP Shelf call_tool with {"tool_id":"${matches[0].tool_id}","arguments":{...}}. Upstream tool_ids are proxied and cannot be called directly as host tools.`
+          }
+        : {})
     };
     this.record({
       source: 'agent',
