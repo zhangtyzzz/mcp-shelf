@@ -135,6 +135,18 @@ export class OAuthStore {
     if (!authorizeUrl) {
       throw new Error('Upstream OAuth server did not return an authorization URL.');
     }
+    let parsedAuthUrl;
+    try {
+      parsedAuthUrl = new URL(authorizeUrl);
+    } catch {
+      throw new Error('Upstream OAuth server returned an invalid authorization URL.');
+    }
+    const safeAuthScheme =
+      parsedAuthUrl.protocol === 'https:' ||
+      (parsedAuthUrl.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(parsedAuthUrl.hostname));
+    if (!safeAuthScheme) {
+      throw new Error('Upstream OAuth authorization URL must use HTTPS (or loopback HTTP).');
+    }
     this.pending.set(stateValue, {
       serverId: server.id,
       serverUrl: server.url,

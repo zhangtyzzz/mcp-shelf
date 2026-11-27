@@ -2,6 +2,7 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { token } from './config.mjs';
 
 const MAX_TASKS = 100;
+const MAX_CONCURRENT_WORKING = 12;
 const DEFAULT_TTL_MS = 15 * 60_000;
 
 /**
@@ -22,12 +23,11 @@ export class TaskManager {
         this.tasks.delete(id);
       }
     }
-    while (this.tasks.size > MAX_TASKS) {
-      const oldest = this.tasks.keys().next().value;
-      if (!oldest) break;
-      const rec = this.tasks.get(oldest);
-      if (rec?.status === 'working') break;
-      this.tasks.delete(oldest);
+    if (this.tasks.size > MAX_TASKS) {
+      for (const [id, rec] of this.tasks) {
+        if (this.tasks.size <= MAX_TASKS) break;
+        if (rec.status !== 'working') this.tasks.delete(id);
+      }
     }
   }
 
@@ -45,6 +45,13 @@ export class TaskManager {
 
   start({ toolId, profileId = null, ttl = DEFAULT_TTL_MS, run }) {
     this.prune();
+    let working = 0;
+    for (const rec of this.tasks.values()) {
+      if (rec.status === 'working') working++;
+    }
+    if (working >= MAX_CONCURRENT_WORKING) {
+      throw new McpError(ErrorCode.InternalError, 'Too many concurrent async tasks.');
+    }
     const taskId = 'task_' + token().slice(0, 20);
     const now = new Date();
     const controller = new AbortController();

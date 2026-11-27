@@ -5,7 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.8.1';
+export const APP_VERSION = '0.8.2';
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));
 export const DEFAULT_DIR = () => path.join(os.homedir(), '.config', APP_NAME);
@@ -122,6 +122,9 @@ export function descriptions(v) {
   );
 }
 
+const BLOCKED_ENV_NAMES = /^(?:MCP_SHELF_|NODE_OPTIONS$|LD_PRELOAD$|LD_LIBRARY_PATH$|DYLD_)/;
+const isAllowedEnvName = (x) => envName.test(x) && !BLOCKED_ENV_NAMES.test(x);
+
 export function source(v) {
   if (!rec(v) || typeof v.id !== 'string' || !serverId.test(v.id)) {
     throw fail('连接 ID 需要小写字母开头，只能含小写字母、数字、横线和下划线。');
@@ -173,7 +176,7 @@ export function source(v) {
       command,
       cwd,
       args: array(v.args, (x) => x.length <= 4096 && !x.includes('\0'), '参数', 100),
-      envKeys: [...new Set(array(v.envKeys, (x) => envName.test(x), '环境变量名', 50))]
+      envKeys: [...new Set(array(v.envKeys, isAllowedEnvName, '环境变量名', 50))]
     };
   }
   if (v.transport !== 'http') {
@@ -192,8 +195,8 @@ export function source(v) {
     throw fail('使用 HTTPS 或回环 HTTP，URL 不含凭据、查询或片段。');
   }
   const bearerEnv = limited(v.bearerEnv, 'Bearer 变量名', 100);
-  if (bearerEnv && !envName.test(bearerEnv)) {
-    throw fail('无效的 Bearer 环境变量名。');
+  if (bearerEnv && !isAllowedEnvName(bearerEnv)) {
+    throw fail('无效或受保护的 Bearer 环境变量名。');
   }
   const rawMode = v.authMode;
   const authMode =

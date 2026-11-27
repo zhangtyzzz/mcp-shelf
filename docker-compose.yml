@@ -5,6 +5,10 @@ services:
     # build: .
     container_name: mcp-shelf
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       # Bind to host loopback and front with Caddy / Nginx Proxy Manager for automatic HTTPS
       - "127.0.0.1:8787:8787"

@@ -10,8 +10,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY ui ./ui
 
-# Prepare non-root data directory for persisted config.json (0600)
-RUN mkdir -p /data && chown -R node:node /app /data
+# Prepare non-root data directory for persisted config.json (0600); keep /app read-only to node
+RUN mkdir -p /data && chown -R node:node /data
 
 USER node
 

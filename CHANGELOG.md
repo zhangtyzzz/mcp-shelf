@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.2] - 2026-11-27
+
+### Security
+- **HTML Escaping & CSP Compliance**: Escaped `/api/oauth/callback` HTML output and removed inline `style` attributes.
+- **Strict OAuth 2.1 Redirect URI Validation**: Blocked non-loopback `http://` and unsafe custom schemes (`blob:`, `ftp:`, `ws:`, `wss:`, `about:`) in Dynamic Client Registration (`/oauth/register`).
+- **Auth & Rate-Limit Hardening**: Switched password verification to async `scrypt` with length caps; gated `X-Forwarded-*` trust behind explicit `MCP_SHELF_TRUST_PROXY=true`; prevented rate-limit table global wipes; added server-side session revocation on `/api/auth/logout`; added HSTS header on HTTPS requests.
+- **OAuth Server Hardening**: Rate-limited `/oauth/register`, bounded pending `forms`/`codes` and PKCE/state lengths, preserved clients with active tokens during eviction, moved store to `oauth/_server.json` (avoiding collision with upstream `id: "server"`), hid Access Profile names from unauthenticated `/oauth/authorize` pages in remote mode, and revoked scoped OAuth tokens when rotating master/profile tokens or deleting profiles.
+- **Secret Isolation & Container Hardening**: Blocked `MCP_SHELF_*`, `NODE_OPTIONS`, and dynamic linker env vars from `envKeys`/`bearerEnv`; validated upstream `authorizeUrl` schemes (`https:` or loopback `http:`); kept `/app` read-only to `node` in `Dockerfile`; added `cap_drop: [ALL]` and `no-new-privileges:true` to `docker-compose.yml`; fixed `TaskManager.prune()` and capped concurrent async tasks.
+
 ## [0.8.1] - 2026-11-27
 
 ### Added

@@ -283,7 +283,12 @@ function sources() {
                     render();
                     toast(t('toast.oauthAuthorized'));
                   } else if (res.authorizeUrl) {
-                    window.open(res.authorizeUrl, '_blank', 'noopener,noreferrer');
+                    const u = new URL(res.authorizeUrl);
+                    const safe =
+                      u.protocol === 'https:' ||
+                      (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname));
+                    if (!safe) throw new Error('Blocked unsafe OAuth redirect URL.');
+                    window.open(u.href, '_blank', 'noopener,noreferrer');
                     toast(t('toast.oauthStarted'));
                   }
                 } catch (err) {

@@ -38,13 +38,15 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   assert.equal(asm.registration_endpoint, app.url + '/oauth/register');
   assert.deepEqual(asm.code_challenge_methods_supported, ['S256']);
 
-  // 3. Dynamic Client Registration rejects unsafe redirect_uri and accepts loopback
-  const badReg = await fetch(asm.registration_endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_name: 'Bad', redirect_uris: ['javascript:alert(1)'] })
-  });
-  assert.equal(badReg.status, 400);
+  // 3. Dynamic Client Registration rejects unsafe redirect_uri (including non-loopback http://) and accepts loopback
+  for (const badUri of ['javascript:alert(1)', 'http://attacker.example/cb', 'blob:https://example.com/1']) {
+    const badReg = await fetch(asm.registration_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_name: 'Bad', redirect_uris: [badUri] })
+    });
+    assert.equal(badReg.status, 400, `must reject ${badUri}`);
+  }
 
   const regRes = await fetch(asm.registration_endpoint, {
     method: 'POST',
@@ -183,7 +185,7 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   await mcpClient.close();
 
   // 7. Persisted OAuth clients & SHA-256-hashed tokens survive full server restart
-  const storePath = path.join(dir, 'oauth', 'server.json');
+  const storePath = path.join(dir, 'oauth', '_server.json');
   assert.equal(fs.statSync(storePath).mode & 0o777, 0o600);
   const rawStore = fs.readFileSync(storePath, 'utf8');
   assert.ok(!rawStore.includes(tokData.access_token), 'raw access_token must not be stored in plaintext');
@@ -208,6 +210,56 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
     })
   ).structuredContent;
   assert.deepEqual(echoedAfter, { echo: 'survived-restart' });
+  await mcpAfterRestart.close();
+
+  // 8. Rotating profile token revokes profile-scoped OAuth access tokens, and logout revokes session cookie
+  const reLogin = await fetch(restarted.url + '/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: 'super-strong-admin-pass-123' })
+  });
+  const reCookie = (reLogin.headers.get('set-cookie') || '').split(';')[0];
+  const reSt = await (await fetch(restarted.url + '/api/state', { headers: { Cookie: reCookie } })).json();
+  const rotRes = await fetch(restarted.url + '/api/profiles/only-demo/rotate', {
+    method: 'POST',
+    headers: { Cookie: reCookie, 'X-Shelf-CSRF': reSt.csrf }
+  });
+  assert.equal(rotRes.status, 200);
+  const revokedMcp = await fetch(restarted.url + '/mcp', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + tokData.access_token }
+  });
+  assert.equal(revokedMcp.status, 401);
+
+  // Blocked protected env var names (MCP_SHELF_ADMIN_PASSWORD)
+  const blockedEnv = await fetch(restarted.url + '/api/servers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: reCookie, 'X-Shelf-CSRF': reSt.csrf },
+    body: JSON.stringify({
+      id: 'leak-test',
+      label: 'Leak',
+      transport: 'http',
+      url: 'https://mcp.exa.ai/mcp',
+      authMode: 'bearer',
+      bearerEnv: 'MCP_SHELF_ADMIN_PASSWORD'
+    })
+  });
+  assert.equal(blockedEnv.status, 400);
+
+  // Reflected HTML injection in /api/oauth/callback is escaped and has no inline style
+  const cbHtml = await (
+    await fetch(restarted.url + '/api/oauth/callback?error=' + encodeURIComponent('<img src=x onerror=alert(1)>'))
+  ).text();
+  assert.ok(!cbHtml.includes('<img '), 'callback HTML must escape error param');
+  assert.ok(!cbHtml.includes('style='), 'callback HTML must not use inline style');
+
+  // Logout immediately revokes the session cookie server-side
+  await fetch(restarted.url + '/api/auth/logout', {
+    method: 'POST',
+    headers: { Cookie: reCookie, 'X-Shelf-CSRF': reSt.csrf }
+  });
+  const afterLogout = await fetch(restarted.url + '/api/state', { headers: { Cookie: reCookie } });
+  assert.equal(afterLogout.status, 401);
 });
 
 test('Remote mode behind HTTPS reverse proxy (Host, Origin, X-Forwarded-Proto, Secure cookie, OAuth metadata)', async (t) => {

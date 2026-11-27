@@ -8,6 +8,22 @@ const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const FORM_TTL_MS = 10 * 60_000;
 const MAX_CLIENTS = 200;
 const MAX_TOKENS = 200;
+const MAX_FORMS = 200;
+const MAX_CODES = 200;
+const DCR_WINDOW_MS = 60 * 60_000;
+const DCR_MAX_PER_WINDOW = 20;
+const BLOCKED_SCHEMES = new Set([
+  'javascript:',
+  'data:',
+  'vbscript:',
+  'file:',
+  'blob:',
+  'about:',
+  'ftp:',
+  'ws:',
+  'wss:'
+]);
+const PKCE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43,128}$/;
 
 function esc(s) {
   return String(s || '')
@@ -27,9 +43,11 @@ function validRedirectUri(raw) {
     return false;
   }
   if (u.protocol === 'https:') return true;
-  if (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) return true;
-  // Allow native desktop custom URI schemes (e.g. cursor://, vscode://) while blocking dangerous ones
-  if (/^[a-z][a-z0-9+.-]{1,30}:$/.test(u.protocol) && !['javascript:', 'data:', 'vbscript:', 'file:'].includes(u.protocol)) {
+  if (u.protocol === 'http:') {
+    return ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname);
+  }
+  // Allow native desktop custom URI schemes (e.g. cursor://, vscode://) while blocking unsafe ones
+  if (/^[a-z][a-z0-9+.-]{1,30}:$/.test(u.protocol) && !BLOCKED_SCHEMES.has(u.protocol)) {
     return true;
   }
   return false;
@@ -70,17 +88,37 @@ async function readFormOrJson(req) {
  * to authenticate against MCP Shelf without manually copying Bearer tokens.
  */
 export class ShelfOAuthServer {
-  constructor({ cfg, auth, isRemote, dir = null }) {
+  constructor({ cfg, auth, isRemote, dir = null, clientKey = null }) {
     this.cfg = cfg;
     this.auth = auth;
     this.isRemote = isRemote;
-    this.storePath = dir ? path.join(dir, 'oauth', 'server.json') : null;
+    this.clientKey = clientKey || ((req) => req.socket?.remoteAddress || 'unknown');
+    // Leading underscore guarantees no collision with upstream serverId (/^[a-z].../)
+    this.storePath = dir ? path.join(dir, 'oauth', '_server.json') : null;
     this.clients = new Map();
     this.forms = new Map();
     this.codes = new Map();
+    this.dcrAttempts = new Map();
     // Map<sha256(accessToken), { clientId, profileId, exp }>
     this.tokens = new Map();
     this._load();
+  }
+
+  revokeByProfile(profileId) {
+    let changed = false;
+    for (const [h, t] of this.tokens) {
+      if ((profileId === null && t.profileId === null) || (profileId !== null && t.profileId === profileId)) {
+        this.tokens.delete(h);
+        changed = true;
+      }
+    }
+    if (changed) this._save();
+  }
+
+  revokeAll() {
+    if (!this.tokens.size) return;
+    this.tokens.clear();
+    this._save();
   }
 
   _load() {
@@ -173,6 +211,20 @@ export class ShelfOAuthServer {
   }
 
   async handleRegister(req) {
+    const key = this.clientKey(req);
+    const now = Date.now();
+    for (const [k, v] of this.dcrAttempts) {
+      if (now - v.since > DCR_WINDOW_MS) this.dcrAttempts.delete(k);
+    }
+    const prev = this.dcrAttempts.get(key);
+    if (prev && prev.count >= DCR_MAX_PER_WINDOW) {
+      throw fail('Too many client registrations. Try again later.', 429);
+    }
+    if (this.dcrAttempts.size >= 500 && !prev) {
+      this.dcrAttempts.delete(this.dcrAttempts.keys().next().value);
+    }
+    this.dcrAttempts.set(key, prev ? { count: prev.count + 1, since: prev.since } : { count: 1, since: now });
+
     const body = await readFormOrJson(req);
     if (!rec(body)) throw fail('Invalid client registration payload.');
     const uris = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
@@ -180,7 +232,16 @@ export class ShelfOAuthServer {
       throw fail('Valid redirect_uris array is required.');
     }
     if (this.clients.size >= MAX_CLIENTS) {
-      this.clients.delete(this.clients.keys().next().value);
+      const activeClientIds = new Set([...this.tokens.values()].map((t) => t.clientId));
+      let evicted = false;
+      for (const cid of this.clients.keys()) {
+        if (!activeClientIds.has(cid)) {
+          this.clients.delete(cid);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) throw fail('Maximum registered OAuth clients reached.', 429);
     }
     const clientId = 'shelf_cli_' + token().slice(0, 20);
     const client = {
@@ -213,14 +274,20 @@ export class ShelfOAuthServer {
     if (responseType !== 'code') {
       throw fail('Only response_type=code is supported.');
     }
-    if (!codeChallenge || codeChallengeMethod !== 'S256') {
-      throw fail('PKCE with code_challenge_method=S256 is required.');
+    if (state.length > 512) {
+      throw fail('OAuth state parameter is too long.');
+    }
+    if (!PKCE_CHALLENGE_RE.test(codeChallenge) || codeChallengeMethod !== 'S256') {
+      throw fail('PKCE with valid S256 code_challenge is required.');
     }
 
     const nonce = token().slice(0, 32);
     const now = Date.now();
     for (const [k, v] of this.forms) {
       if (now - v.at > FORM_TTL_MS) this.forms.delete(k);
+    }
+    while (this.forms.size >= MAX_FORMS) {
+      this.forms.delete(this.forms.keys().next().value);
     }
     this.forms.set(nonce, {
       clientId,
@@ -230,7 +297,9 @@ export class ShelfOAuthServer {
       at: now
     });
 
-    const profiles = this.cfg.get().profiles || [];
+    // Avoid enumerating Access Profile names to unauthenticated callers in remote mode
+    const canListProfiles = !this.isRemote || Boolean(this.auth?.verifySession(req));
+    const profiles = canListProfiles ? this.cfg.get().profiles || [] : [];
     const profileOptions = [
       '<option value="">All enabled connections (Master scope)</option>',
       ...profiles.map(
@@ -292,7 +361,7 @@ export class ShelfOAuthServer {
       if (!this.auth.checkRateLimit(req)) {
         throw fail('Too many failed attempts. Try again later.', 429);
       }
-      if (!this.auth.verifyPassword(body.password)) {
+      if (!(await this.auth.verifyPassword(body.password))) {
         this.auth.recordFail(req);
         return { invalidPassword: true, flow };
       }
@@ -306,13 +375,20 @@ export class ShelfOAuthServer {
         ? body.profile_id
         : null;
 
+    const nowMs = Date.now();
+    for (const [k, v] of this.codes) {
+      if (nowMs > v.exp) this.codes.delete(k);
+    }
+    while (this.codes.size >= MAX_CODES) {
+      this.codes.delete(this.codes.keys().next().value);
+    }
     const code = 'code_' + token().slice(0, 32);
     this.codes.set(code, {
       clientId: flow.clientId,
       redirectUri: flow.redirectUri,
       codeChallenge: flow.codeChallenge,
       profileId,
-      exp: Date.now() + CODE_TTL_MS
+      exp: nowMs + CODE_TTL_MS
     });
 
     redirect.searchParams.set('code', code);

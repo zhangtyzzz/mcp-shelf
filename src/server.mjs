@@ -1,7 +1,17 @@
 import fs from 'node:fs';
 import http from 'node:http';
-import { createHmac, scryptSync } from 'node:crypto';
+import { createHmac, scrypt, scryptSync } from 'node:crypto';
+import { promisify } from 'node:util';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+
+const scryptAsync = promisify(scrypt);
+const escHtml = (s) =>
+  String(s || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import {
   APP_VERSION,
@@ -110,16 +120,33 @@ function parseCookies(header) {
   return out;
 }
 
-function createAuth(cfg, adminPassword) {
+function createAuth(cfg, adminPassword, { trustProxy = false } = {}) {
   const salt = 'mcp-shelf-auth-v1';
   const expectedHash = adminPassword ? scryptSync(adminPassword, salt, 32).toString('hex') : '';
   const sessionSecret = () => createHmac('sha256', cfg.get().token).update('session-key-v1').digest();
   const attempts = new Map();
+  const revokedSessions = new Map();
 
-  const clientKey = (req) =>
-    String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown')
-      .split(',')[0]
-      .trim();
+  const clientKey = (req) => {
+    if (trustProxy && req.headers['x-forwarded-for']) {
+      // Rightmost entry is appended by the trusted reverse proxy
+      const parts = String(req.headers['x-forwarded-for'])
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (parts.length) return parts[parts.length - 1];
+    }
+    return String(req.socket?.remoteAddress || 'unknown');
+  };
+
+  const pruneAttempts = (now) => {
+    for (const [k, v] of attempts) {
+      if (now - v.since > LOGIN_WINDOW_MS) attempts.delete(k);
+    }
+    while (attempts.size >= 500) {
+      attempts.delete(attempts.keys().next().value);
+    }
+  };
 
   const checkRateLimit = (req) => {
     const k = clientKey(req);
@@ -134,18 +161,18 @@ function createAuth(cfg, adminPassword) {
     const now = Date.now();
     const prev = attempts.get(k);
     if (!prev || now - prev.since > LOGIN_WINDOW_MS) {
+      pruneAttempts(now);
       attempts.set(k, { count: 1, since: now });
     } else {
       prev.count++;
     }
-    if (attempts.size > 500) attempts.clear();
   };
 
   const clearFail = (req) => attempts.delete(clientKey(req));
 
-  const verifyPassword = (candidate) => {
-    if (typeof candidate !== 'string' || !expectedHash) return false;
-    const h = scryptSync(candidate, salt, 32).toString('hex');
+  const verifyPassword = async (candidate) => {
+    if (typeof candidate !== 'string' || !expectedHash || candidate.length > 256) return false;
+    const h = (await scryptAsync(candidate, salt, 32)).toString('hex');
     return same(h, expectedHash);
   };
 
@@ -153,6 +180,23 @@ function createAuth(cfg, adminPassword) {
     const payload = `${Date.now() + SESSION_TTL_MS}.${token().slice(0, 24)}`;
     const sig = createHmac('sha256', sessionSecret()).update(payload).digest('hex');
     return `${payload}.${sig}`;
+  };
+
+  const revokeSession = (req) => {
+    const raw = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+    if (!raw) return;
+    const parts = raw.split('.');
+    if (parts.length !== 3) return;
+    const exp = Number(parts[0]);
+    const nonce = parts[1];
+    const now = Date.now();
+    for (const [k, e] of revokedSessions) {
+      if (now > e) revokedSessions.delete(k);
+    }
+    while (revokedSessions.size >= 500) {
+      revokedSessions.delete(revokedSessions.keys().next().value);
+    }
+    if (Number.isFinite(exp) && exp > now) revokedSessions.set(nonce, exp);
   };
 
   const verifySession = (req) => {
@@ -163,11 +207,12 @@ function createAuth(cfg, adminPassword) {
     const [expStr, nonce, sig] = parts;
     const exp = Number(expStr);
     if (!Number.isFinite(exp) || Date.now() > exp) return false;
+    if (revokedSessions.has(nonce)) return false;
     const expected = createHmac('sha256', sessionSecret()).update(`${expStr}.${nonce}`).digest('hex');
     return same(sig, expected);
   };
 
-  return { checkRateLimit, recordFail, clearFail, verifyPassword, signSession, verifySession };
+  return { clientKey, checkRateLimit, recordFail, clearFail, verifyPassword, signSession, revokeSession, verifySession };
 }
 
 export async function launch({
@@ -193,8 +238,15 @@ export async function launch({
   const tasks = new TaskManager();
   const csrf = token();
   const startedAt = Date.now();
-  const auth = isRemote ? createAuth(cfg, adminPassword) : null;
-  const oauthServer = new ShelfOAuthServer({ cfg, auth, isRemote, dir });
+  const trustProxy = String(process.env.MCP_SHELF_TRUST_PROXY || '').toLowerCase() === 'true';
+  const auth = isRemote ? createAuth(cfg, adminPassword, { trustProxy }) : null;
+  const oauthServer = new ShelfOAuthServer({
+    cfg,
+    auth,
+    isRemote,
+    dir,
+    clientKey: auth?.clientKey
+  });
   const publicHost = publicUrl ? new URL(publicUrl).host : '';
   const publicOrigin = publicUrl ? new URL(publicUrl).origin : '';
 
@@ -258,8 +310,8 @@ export async function launch({
   }
 
   const isHttpsReq = (req) =>
-    String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https' ||
-    publicUrl.startsWith('https://');
+    publicUrl.startsWith('https://') ||
+    (trustProxy && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https');
 
   const sessionCookieHeader = (req, value, maxAgeSec) => {
     const parts = [
@@ -275,6 +327,9 @@ export async function launch({
 
   const server = http.createServer(async (req, res) => {
     for (const [k, v] of Object.entries(security)) res.setHeader(k, v);
+    if (isHttpsReq(req)) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
     const json = (code, x) => {
       if (!res.headersSent && !res.destroyed) {
         res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -294,14 +349,18 @@ export async function launch({
         return json(403, { error: 'Origin not allowed.' });
       }
     } else {
-      const fwdHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+      const fwdHost = trustProxy
+        ? String(req.headers['x-forwarded-host'] || '').split(',')[0].trim()
+        : '';
       const safeFwdHost = fwdHost && !/[\s/\\]/.test(fwdHost) ? fwdHost : '';
-      if (publicHost && h !== publicHost && safeFwdHost !== publicHost && !localHosts.includes(h)) {
+      if (publicHost && h !== publicHost && !localHosts.includes(h)) {
         return json(403, { error: 'Host not allowed.' });
       }
       const allowedOrigins = ['http://' + h, 'https://' + h];
       if (publicOrigin) allowedOrigins.push(publicOrigin);
-      if (!publicHost && safeFwdHost) allowedOrigins.push('http://' + safeFwdHost, 'https://' + safeFwdHost);
+      if (trustProxy && !publicHost && safeFwdHost) {
+        allowedOrigins.push('http://' + safeFwdHost, 'https://' + safeFwdHost);
+      }
       if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) {
         return json(403, { error: 'Origin not allowed.' });
       }
@@ -321,9 +380,11 @@ export async function launch({
         const html = (title, msg, ok = true) => {
           res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
           res.end(
-            `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>` +
-              `<body style="font:15px/1.6 system-ui;max-width:480px;margin:64px auto;padding:20px">` +
-              `<h2>${title}</h2><p>${msg}</p><p><a href="/">Return to MCP Shelf</a></p></body></html>`
+            `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+              `<title>${escHtml(title)} · MCP Shelf</title><link rel="stylesheet" href="/style.css"></head>` +
+              `<body><div class="login-wrap"><div class="login-card"><div class="kicker">MCP OAUTH 2.1</div>` +
+              `<h2>${escHtml(title)}</h2><p class="sub">${escHtml(msg)}</p>` +
+              `<div class="actions"><a class="btn primary" href="/">Return to MCP Shelf</a></div></div></div></body></html>`
           );
         };
         if (errParam) return html('OAuth Authorization Denied', `Upstream returned error: ${errParam}`, false);
@@ -373,7 +434,9 @@ export async function launch({
         return;
       }
 
-      const fwdHostRaw = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+      const fwdHostRaw = trustProxy
+        ? String(req.headers['x-forwarded-host'] || '').split(',')[0].trim()
+        : '';
       const effectiveHost = fwdHostRaw && !/[\s/\\]/.test(fwdHostRaw) ? fwdHostRaw : h;
       const reqOrigin = publicUrl || `${isHttpsReq(req) ? 'https' : 'http'}://${effectiveHost}`;
 
@@ -483,7 +546,7 @@ export async function launch({
           return json(429, { error: '登录尝试过于频繁，请 15 分钟后再试。' });
         }
         const payload = await readBody(req);
-        if (!rec(payload) || !auth.verifyPassword(payload.password)) {
+        if (!rec(payload) || !(await auth.verifyPassword(payload.password))) {
           auth.recordFail(req);
           return json(401, { error: '管理密码不正确。' });
         }
@@ -494,6 +557,7 @@ export async function launch({
 
       if (method === 'POST' && route === '/api/auth/logout') {
         if (isRemote) {
+          auth.revokeSession(req);
           res.setHeader('Set-Cookie', sessionCookieHeader(req, '', 0));
         }
         return json(200, { ok: true });
@@ -574,6 +638,7 @@ export async function launch({
           const nextTok = token();
           const updated = { ...existing, token: nextTok };
           cfg.save({ ...now, profiles: now.profiles.map((pr) => (pr.id === pid ? updated : pr)) });
+          oauthServer.revokeByProfile(pid);
           return json(200, { ok: true, token: nextTok });
         }
         if (!sub && method === 'PUT') {
@@ -584,6 +649,7 @@ export async function launch({
         }
         if (!sub && method === 'DELETE') {
           cfg.save({ ...now, profiles: now.profiles.filter((pr) => pr.id !== pid) });
+          oauthServer.revokeByProfile(pid);
           return json(200, { ok: true });
         }
       }
@@ -595,6 +661,7 @@ export async function launch({
       if (method === 'POST' && route === '/api/token/rotate') {
         const nextToken = token();
         cfg.save({ ...cfg.get(), token: nextToken });
+        oauthServer.revokeByProfile(null);
         return json(200, { ok: true, token: nextToken });
       }
 
