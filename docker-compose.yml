@@ -1,0 +1,25 @@
+services:
+  mcp-shelf:
+    build: .
+    container_name: mcp-shelf
+    restart: unless-stopped
+    ports:
+      # 建议仅绑定 127.0.0.1，由宿主机 Caddy / Nginx Proxy Manager 提供 HTTPS 反向代理
+      - "127.0.0.1:8787:8787"
+    environment:
+      MCP_SHELF_MODE: "remote"
+      MCP_SHELF_HOST: "0.0.0.0"
+      MCP_SHELF_PORT: "8787"
+      MCP_SHELF_HOME: "/data"
+      # 必填：远程模式管理台登录密码（至少 12 位，建议用 openssl rand -base64 24 生成）
+      MCP_SHELF_ADMIN_PASSWORD: "${MCP_SHELF_ADMIN_PASSWORD:?Set MCP_SHELF_ADMIN_PASSWORD (>=12 chars)}"
+      # 建议设置：你的对外 HTTPS 域名（用于反代 Host/Origin 校验与自动生成远端接入配置）
+      MCP_SHELF_PUBLIC_URL: "${MCP_SHELF_PUBLIC_URL:-https://mcp.example.com}"
+      # 如上游 MCP 需要凭据，在这里通过环境变量传入（绝不写入 config.json）：
+      # GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      # LINEAR_API_KEY: "${LINEAR_API_KEY:-}"
+    volumes:
+      - mcp_shelf_data:/data
+
+volumes:
+  mcp_shelf_data:

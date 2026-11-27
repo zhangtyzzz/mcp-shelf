@@ -1,0 +1,9 @@
+# Example Caddyfile for reverse-proxying MCP Shelf with automatic HTTPS
+# Replace mcp.example.com with your domain and run `caddy reload`.
+
+mcp.example.com {
+    reverse_proxy 127.0.0.1:8787 {
+        # Keep SSE (/mcp-events) and long tool calls flushing immediately
+        flush_interval -1
+    }
+}

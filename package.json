@@ -1,0 +1,49 @@
+{
+  "name": "mcp-shelf",
+  "version": "0.4.0",
+  "description": "Local & self-hosted MCP gateway and workbench — configure upstream MCP servers once and share them across Grok Build, Codex, Claude Code, and Google Antigravity.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhangtyzzz/mcp-shelf.git"
+  },
+  "homepage": "https://github.com/zhangtyzzz/mcp-shelf#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "gateway",
+    "ai-agent",
+    "codex",
+    "claude-code",
+    "antigravity",
+    "tool-discovery"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mcp-shelf": "src/main.mjs"
+  },
+  "files": [
+    "src/",
+    "ui/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "demo": "node src/main.mjs demo",
+    "test": "node --test test/*.test.mjs",
+    "test:ui": "node test/ui.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "ajv": "8.20.0"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.1"
+  }
+}
