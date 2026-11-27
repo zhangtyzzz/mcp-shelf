@@ -196,6 +196,7 @@ export async function launch({
   const auth = isRemote ? createAuth(cfg, adminPassword) : null;
   const oauthServer = new ShelfOAuthServer({ cfg, auth, isRemote });
   const publicHost = publicUrl ? new URL(publicUrl).host : '';
+  const publicOrigin = publicUrl ? new URL(publicUrl).origin : '';
 
   const resolveAccess = (authHeader, expectedProfileId = null) => {
     const raw = String(authHeader || '');
@@ -293,10 +294,15 @@ export async function launch({
         return json(403, { error: 'Origin not allowed.' });
       }
     } else {
-      if (publicHost && h !== publicHost && !localHosts.includes(h)) {
+      const fwdHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+      const safeFwdHost = fwdHost && !/[\s/\\]/.test(fwdHost) ? fwdHost : '';
+      if (publicHost && h !== publicHost && safeFwdHost !== publicHost && !localHosts.includes(h)) {
         return json(403, { error: 'Host not allowed.' });
       }
-      if (req.headers.origin && !['http://' + h, 'https://' + h].includes(req.headers.origin)) {
+      const allowedOrigins = ['http://' + h, 'https://' + h];
+      if (publicOrigin) allowedOrigins.push(publicOrigin);
+      if (!publicHost && safeFwdHost) allowedOrigins.push('http://' + safeFwdHost, 'https://' + safeFwdHost);
+      if (req.headers.origin && !allowedOrigins.includes(req.headers.origin)) {
         return json(403, { error: 'Origin not allowed.' });
       }
     }
@@ -367,7 +373,9 @@ export async function launch({
         return;
       }
 
-      const reqOrigin = publicUrl || `${isHttpsReq(req) ? 'https' : 'http'}://${h}`;
+      const fwdHostRaw = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+      const effectiveHost = fwdHostRaw && !/[\s/\\]/.test(fwdHostRaw) ? fwdHostRaw : h;
+      const reqOrigin = publicUrl || `${isHttpsReq(req) ? 'https' : 'http'}://${effectiveHost}`;
 
       // MCP Shelf's own OAuth 2.1 + PKCE Server endpoints (RFC 9728, RFC 8414, RFC 7591)
       if (method === 'GET' && route.startsWith('/.well-known/oauth-protected-resource')) {

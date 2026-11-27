@@ -247,7 +247,21 @@ test('Remote mode behind HTTPS reverse proxy (Host, Origin, X-Forwarded-Proto, S
   assert.match(setCookie, /SameSite=Strict/i);
   assert.match(setCookie, /Secure/i);
 
-  // 4. Cross-origin request rejected with 403
+  // 4. Reverse proxy rewriting Host to loopback while browser sends publicUrl Origin must succeed
+  const rewrittenHostLogin = await req(
+    'POST',
+    '/api/auth/login',
+    {
+      Host: `127.0.0.1:${port}`,
+      Origin: 'https://mcp.example.com',
+      'X-Forwarded-Proto': 'https',
+      'Content-Type': 'application/json'
+    },
+    JSON.stringify({ password: 'proxy-strong-password-123' })
+  );
+  assert.equal(rewrittenHostLogin.status, 200);
+
+  // 5. Cross-origin request rejected with 403
   const badOrigin = await req('GET', '/api/state', {
     Host: 'mcp.example.com',
     Origin: 'https://evil.attacker.test',
