@@ -329,25 +329,24 @@ function sources() {
 
   const panelExtra = actions(
     el('span', { class: 'sub' }, t('sources.count', { count: all.length })),
-    all.length
-      ? btn(
-          t('sources.export'),
-          async () => {
-            try {
-              const data = await request('export');
-              const blob = new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' });
-              const url = URL.createObjectURL(blob);
-              const a = el('a', { href: url, download: 'mcp-shelf-servers.json' });
-              a.click();
-              URL.revokeObjectURL(url);
-              toast(t('toast.exported'));
-            } catch (err) {
-              toast(err.message, true);
-            }
-          },
-          'mini'
-        )
-      : null,
+    btn(
+      t('backup.download'),
+      async () => {
+        try {
+          const data = await request('backup');
+          const blob = new Blob([JSON.stringify(data) + '\n'], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const link = el('a', { href: url, download: 'mcp-shelf-backup.json' });
+          link.click();
+          URL.revokeObjectURL(url);
+          toast(t('backup.downloaded'));
+        } catch (err) {
+          toast(err.message, true);
+        }
+      },
+      'mini'
+    ),
+    btn(t('backup.restore'), (e) => openRestore(e.currentTarget), 'mini'),
     hasEnabled
       ? btn(
           t('sources.refreshAll'),
@@ -372,7 +371,6 @@ function sources() {
       t('sources.sub'),
       actions(
         btn(t('sources.templates'), (e) => openTemplates(e.currentTarget)),
-        btn(t('sources.import'), (e) => openImport(e.currentTarget)),
         btn(t('sources.add'), (e) => openEditor(null, e.currentTarget), 'primary')
       )
     ),
@@ -1420,103 +1418,43 @@ profileForm.addEventListener('submit', async (e) => {
   }
 });
 
-// Import config dialog
-const importDialog = $('#import-dialog');
-const importForm = $('#import-form');
-const importText = $('#import-text');
-const importPreview = $('#import-preview');
-const importError = $('#import-error');
+const restoreDialog = $('#restore-dialog');
+const restoreForm = $('#restore-form');
+const restoreFile = $('#restore-file');
+const restoreError = $('#restore-error');
 
-function openImport(button) {
+function openRestore(button) {
   originButton = button;
-  importForm.reset();
-  importPreview.hidden = true;
-  importPreview.replaceChildren();
-  importError.textContent = '';
-  importDialog.showModal();
+  restoreForm.reset();
+  restoreError.textContent = '';
+  restoreDialog.showModal();
 }
 
-$('#import-x').onclick = $('#import-cancel').onclick = () => importDialog.close();
-importDialog.addEventListener('close', () => originButton?.focus());
+$('#restore-x').onclick = $('#restore-cancel').onclick = () => restoreDialog.close();
+restoreDialog.addEventListener('close', () => originButton?.focus());
 
-function showImportResults(res, summary, count) {
-  const list = el(
-    'div',
-    { class: 'import-list' },
-    ...res.items.map(({ server, warnings, conflict }) =>
-      el(
-        'div',
-        { class: 'import-item' },
-        el(
-          'div',
-          { class: 'import-item-head' },
-          el('strong', { class: 'mono' }, `${server.id} (${server.transport})`),
-          pill(conflict ? t('import.conflict') : t('import.willImport'), conflict ? 'warn' : 'ok')
-        ),
-        el('div', { class: 'sub mono' }, server.transport === 'stdio' ? server.command : server.url),
-        ...warnings.map((w) => el('div', { class: 'warn-note' }, w))
-      )
-    ),
-    ...res.skipped.map((s) =>
-      el(
-        'div',
-        { class: 'import-item' },
-        el(
-          'div',
-          { class: 'import-item-head' },
-          el('strong', { class: 'mono' }, s.id),
-          pill(t('import.skipped'), 'bad')
-        ),
-        el('div', { class: 'sub' }, s.reason)
-      )
-    )
-  );
-  importPreview.replaceChildren(
-    el(
-      'div',
-      { class: 'sub' },
-      t(summary, {
-        format: res.format.toUpperCase(),
-        count
-      })
-    ),
-    list
-  );
-  importPreview.hidden = false;
-}
-
-$('#import-check').addEventListener('click', async () => {
-  importError.textContent = '';
-  importPreview.hidden = true;
-  try {
-    const res = await request('import/preview', 'POST', { text: importText.value });
-    showImportResults(res, 'import.summary', res.items.filter((x) => !x.conflict).length);
-  } catch (err) {
-    importError.textContent = err.message;
-  }
-});
-
-importForm.addEventListener('submit', async (e) => {
+restoreForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  importError.textContent = '';
-  const submit = $('#import-submit');
+  const file = restoreFile.files[0];
+  if (!file || !confirm(t('backup.confirm'))) return;
+  const submit = restoreForm.querySelector('[type=submit]');
   submit.disabled = true;
+  restoreError.textContent = '';
   try {
-    const res = await request('import', 'POST', { text: importText.value });
-    if (res.skipped.length || !res.imported.length) {
-      showImportResults({ ...res, items: [] }, 'import.finished', res.imported.length);
-    } else {
-      importDialog.close();
+    const raw = await file.text();
+    let backup;
+    try {
+      backup = JSON.parse(raw);
+    } catch {
+      throw new Error(t('backup.invalidJson'));
     }
-    if (res.imported.length) {
-      await load();
-      render();
-      toast(t('toast.imported', { count: res.imported.length, ids: res.imported.join(', ') }));
-    } else {
-      importError.textContent = t('toast.importNone');
-    }
+    await request('restore', 'POST', backup);
+    restoreDialog.close();
+    await load();
+    render();
+    toast(t('backup.restored'));
   } catch (err) {
-    importError.textContent = err.message;
+    restoreError.textContent = err.message;
   } finally {
     submit.disabled = false;
   }

@@ -17,7 +17,7 @@ MCP Shelf is a lightweight, zero-build Model Context Protocol (MCP) gateway and 
 
 | Problem | Traditional Setup (Direct MCPs) | MCP Shelf |
 |---|---|---|
-| Multi-agent config sprawl | Maintain separate configs for Grok, Codex, Claude, Antigravity | **Configure once, share everywhere** — with one-click JSON / Codex TOML import |
+| Multi-agent config sprawl | Maintain separate configs for Grok, Codex, Claude, Antigravity | **Configure once, share everywhere** |
 | Context window bloat | All upstream JSON schemas dumped into every turn | **Compact server summary + on-demand search** via 3 gateway meta-tools |
 | "Blind" search gateways | Models don't know which servers exist unless prompted | **Auto-injected server summary** in MCP `initialize.instructions` and meta-tool descriptions |
 | Security & governance | Upstream tools exposed all-or-nothing | **Deny-by-default allowlist**, Ajv schema validation, live playground, and activity log |
@@ -50,8 +50,8 @@ npm start
 ```
 
 Open **http://127.0.0.1:8787**:
-1. In **Connections**, click **Templates** to one-click add classic servers (like free **Exa Search**, **Context7 Docs**, **Sequential Thinking**, or **GitHub OAuth**), or click **Import** to paste existing `mcpServers` JSON / Codex `config.toml`.
-2. Click **Fetch Tools**, review and approve tools in **Tool Catalog**, and test them directly in the built-in **Playground**.
+1. In **Connections**, choose a preset under **Templates**, or click **Add Connection** and enter the upstream URL or local startup command.
+2. Click **Fetch Tools** to test the connection. Review and approve the tools you want to expose in **Tool Catalog**.
 3. Open **Connect Agents**, copy the **Streamable HTTP** URL into your client, and sign in with OAuth 2.1 or set a Bearer token. Access profiles have their own URLs and credentials.
 
 Optional global CLI link:
@@ -93,6 +93,10 @@ See [deploy/Caddyfile.example](deploy/Caddyfile.example) for a 5-line automatic 
 - Admin workbench protected by `scrypt` password verification, per-IP brute-force rate limiting (10 attempts / 15 min), and HMAC-SHA256 signed `HttpOnly; SameSite=Strict; Secure` session cookies.
 - `/mcp` endpoint uses an independent 64-hex-char `Authorization: Bearer <TOKEN>` that can be revealed, copied, or rotated anytime from **Connect Agents**.
 
+## Backup and restore
+
+Use **Download Backup** in **Connections** to save Shelf connections, tool approvals, settings, descriptions and access profiles. **Restore Backup** replaces the configuration from a supported Shelf backup. Existing profiles with the same ID keep their token. Configure environment variables and authorize new connections separately. Gateway tokens and OAuth credentials are stored outside the downloaded backup.
+
 ## Access profiles and upgrades
 
 Choose **All enabled connections** or **Selected connections** for each access profile. An empty selection grants no connection access. Upgrading from v0.8.5 or earlier keeps the existing scope and credentials for each legacy profile and snapshots the original config to `config.v1.json` with mode `0600`.
@@ -113,7 +117,7 @@ The web workbench ships with built-in, zero-dependency i18n (**English** default
 ## Testing
 
 ```sh
-npm test                          # Protocol, allowlist, import/export, remote auth & security tests
+npm test                          # Protocol, allowlist, backup/restore, remote auth & security tests
 npm run test:ui                   # Playwright E2E (desktop/mobile, i18n, playground, live MCP)
 node test/codex.mjs --roundtrip   # Codex CLI discovery & tool call roundtrip
 node test/grok.mjs                # Grok Build CLI registration & doctor check

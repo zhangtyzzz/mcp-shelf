@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.7] - 2026-11-28
+
+- Replace third-party client configuration import with a versioned Shelf backup and restore workflow. Backups include connections, tool approvals, settings and access profiles. Authentication remains with the instance.
+- Set up an upstream manually or from a template, test it, approve its tools and copy the standard Shelf endpoint.
+
 ## [0.8.6] - 2026-11-28
 
 ### Fixed

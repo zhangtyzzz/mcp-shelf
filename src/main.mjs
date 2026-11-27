@@ -9,14 +9,13 @@ import {
   defaults,
   demoSource,
   dirFromEnv,
-  parseImportConfig,
   portFromEnv,
   source
 } from './config.mjs';
 import { answer, blocked, createMcp, httpClient, newClient, safeClose } from './catalog.mjs';
 import { launch } from './server.mjs';
 
-export { defaults, demoSource, source, parseImportConfig, createMcp, httpClient, launch };
+export { defaults, demoSource, source, createMcp, httpClient, launch };
 
 const obj = (properties, required) => ({
   type: 'object',

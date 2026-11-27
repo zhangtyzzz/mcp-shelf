@@ -283,93 +283,27 @@ test('admin guards, separate client secret, and rejected unsafe URL settings',as
  await f.api('servers/demo','DELETE');assert.equal((await f.get()).servers.length,0);
 });
 
-test('config import (JSON and Codex TOML), refresh-all, tool playground, activity logs and diagnostics', async t => {
+test('manual connections and Shelf backup restore with refresh, playground, logs and diagnostics', async t => {
  const f = await fixture(t);
  assert.ok(f.app.server.requestTimeout >= 60_000, 'requestTimeout must exceed callTool 30s timeout');
 
- // 1. Import JSON (Claude/Antigravity format): extracts envKeys without saving secret values, skips mcp-shelf itself
- const jsonText = JSON.stringify({
-  mcpServers: {
-   'mcp-shelf': { command: process.execPath, args: [cli, 'stdio'] },
-   'demo-imported': {
-    command: process.execPath,
-    args: [cli, 'demo-upstream'],
-    env: { MY_SECRET_TOKEN: 'super-secret-value-never-stored' }
-   }
-  }
- });
- const preview = await f.api('import/preview', 'POST', { text: jsonText });
- assert.equal(preview.format, 'json');
- assert.equal(preview.items.length, 1);
- assert.equal(preview.items[0].server.id, 'demo-imported');
- assert.deepEqual(preview.items[0].server.envKeys, ['MY_SECRET_TOKEN']);
- assert.equal(preview.skipped.length, 1);
-
- const imported = await f.api('import', 'POST', { text: jsonText }, 201);
- assert.deepEqual(imported.imported, ['demo-imported']);
- const rawCfg = fs.readFileSync(f.app.config.file, 'utf8');
- assert.equal(rawCfg.includes('super-secret-value-never-stored'), false);
-
- // Missing env key warning is surfaced (only variable name)
+ const demo = {...demoSource([]), id:'demo-manual', envKeys:['MISSING_DEMO_KEY']};
+ await f.api('servers', 'POST', demo, 201);
  const st1 = await f.get();
- const impServer = st1.servers.find(s => s.id === 'demo-imported');
- assert.deepEqual(impServer.missingEnvKeys, ['MY_SECRET_TOKEN']);
- assert.deepEqual(impServer.allowlist, []);
-
- // 2. Import Codex TOML format
- const tomlText = [
-  'model = "example"',
-  '[mcp_servers."example.local"]',
-  'command = "npx"',
-  'args = [',
-  '  "-y", # trailing comment',
-  "  'prefix # literal',",
-  '  "@example/mcp",',
-  ']',
-  'enabled = false',
-  '[mcp_servers."example.local".env]',
-  'EXAMPLE_API_KEY = "fixture-secret # not a comment"',
-  '[mcp_servers.codex_remote]',
-  'url = "https://example.com/mcp"',
-  'bearer_token_env_var = "REMOTE_API_KEY"',
-  'enabled = false',
-  ''
- ].join('\n');
- const impToml = await f.api('import', 'POST', { text: tomlText }, 201);
- assert.deepEqual(impToml.imported, ['example-local', 'codex_remote']);
- const local = f.app.config.get().servers.find(s => s.id === 'example-local');
- assert.deepEqual(local.args, ['-y', 'prefix # literal', '@example/mcp']);
- assert.deepEqual(local.envKeys, ['EXAMPLE_API_KEY']);
- assert.equal(fs.readFileSync(f.app.config.file, 'utf8').includes('fixture-secret'), false);
-
- const antigravity = JSON.stringify({mcpServers: {
-  'agy-remote': {serverUrl: 'https://example.com/mcp', headers: {Authorization: 'Bearer fixture-secret'}, enabled: false},
-  'broken-args': {command: 'npx', args: ['valid', 42]},
-  'broken-cwd': {command: 'npx', cwd: 42},
-  'broken-url': {serverUrl: 42}
- }});
- const agyPreview = await f.api('import/preview', 'POST', {text: antigravity});
- assert.equal(agyPreview.items[0].server.url, 'https://example.com/mcp');
- assert.equal(agyPreview.items[0].warnings.length, 1);
- assert.equal(JSON.stringify(agyPreview).includes('fixture-secret'), false);
- assert.deepEqual(agyPreview.skipped.map(({id}) => id), ['broken-args', 'broken-cwd', 'broken-url']);
- const agyImport = await f.api('import', 'POST', {text: antigravity}, 201);
- assert.deepEqual(agyImport.imported, ['agy-remote']);
- const malformed = '[mcp_servers.invalid]\ncommand = "npx"\nargs = ["fixture-secret"';
- const parseError = await f.api('import', 'POST', {text: malformed}, 400);
- assert.match(parseError.error, /TOML/);
- assert.equal(parseError.error.includes('fixture-secret'), false);
- assert.equal(f.app.config.get().servers.some(s => s.id === 'invalid'), false);
+ assert.deepEqual(st1.servers[0].missingEnvKeys, ['MISSING_DEMO_KEY']);
+ assert.deepEqual(st1.servers[0].allowlist, []);
+ await f.api('import', 'POST', {text:'[mcp_servers.demo]'}, 404);
+ await f.api('import/preview', 'POST', {text:'{"mcpServers":{}}'}, 404);
 
  // 3. Refresh all enabled connections
  const refreshed = await f.api('servers/refresh-all', 'POST');
  assert.equal(refreshed.results.length, 1);
- assert.equal(refreshed.results[0].id, 'demo-imported');
+ assert.equal(refreshed.results[0].id, 'demo-manual');
  assert.equal(refreshed.results[0].status, 'ready');
 
  // 4. Playground test call works even before tool is added to Agent allowlist
  const testOk = await f.api('tools/test', 'POST', {
-  tool_id: 'demo-imported/echo',
+  tool_id: 'demo-manual/echo',
   arguments: { text: 'playground hello' }
  });
  assert.deepEqual(testOk.result.structuredContent, { echo: 'playground hello' });
@@ -377,7 +311,7 @@ test('config import (JSON and Codex TOML), refresh-all, tool playground, activit
 
  // Invalid args caught by JSON schema validation in playground too
  const testBad = await f.api('tools/test', 'POST', {
-  tool_id: 'demo-imported/echo',
+  tool_id: 'demo-manual/echo',
   arguments: { text: 123 }
  });
  assert.equal(testBad.result.isError, true);
@@ -385,11 +319,11 @@ test('config import (JSON and Codex TOML), refresh-all, tool playground, activit
  // 5. Activity logs record both playground and agent calls (including blocked)
  const c = await f.bridge();
  await data(c, 'list_mcps');
- await call(c, 'call_tool', { tool_id: 'demo-imported/echo', arguments: { text: 'blocked' } });
+ await call(c, 'call_tool', { tool_id: 'demo-manual/echo', arguments: { text: 'blocked' } });
  const logRes = await (await fetch(f.app.url + '/api/logs')).json();
- assert.ok(logRes.logs.some(l => l.source === 'playground' && l.target === 'demo-imported/echo' && l.status === 'ok'));
+ assert.ok(logRes.logs.some(l => l.source === 'playground' && l.target === 'demo-manual/echo' && l.status === 'ok'));
  assert.ok(logRes.logs.some(l => l.source === 'agent' && l.action === 'list_mcps' && l.status === 'ok'));
- assert.ok(logRes.logs.some(l => l.source === 'agent' && l.target === 'demo-imported/echo' && l.status === 'blocked'));
+ assert.ok(logRes.logs.some(l => l.source === 'agent' && l.target === 'demo-manual/echo' && l.status === 'blocked'));
 
  await f.api('logs', 'DELETE');
  const afterClear = await (await fetch(f.app.url + '/api/logs')).json();
@@ -411,19 +345,36 @@ test('config import (JSON and Codex TOML), refresh-all, tool playground, activit
  assert.equal(health.ok, true);
  assert.equal(typeof health.uptimeSec, 'number');
 
- const exported = await (await fetch(f.app.url + '/api/export')).json();
- assert.equal(JSON.stringify(exported).includes(f.app.config.get().token), false);
- assert.ok(exported.mcpServers['demo-imported']);
-
- await f.api('servers/demo-imported', 'PUT', {
-  ...st1.servers.find(s => s.id === 'demo-imported'),
+ await f.api('servers/demo-manual', 'PUT', {
+  ...st1.servers.find(s => s.id === 'demo-manual'),
   allowlist: ['echo']
  });
  // Query "回显文字" does not appear verbatim in "回显一段文字", but CJK bigram fallback finds it
  const cjkSearch = await data(c, 'search_tool', { query: '回显文字' });
- assert.equal(cjkSearch.matches[0]?.tool_id, 'demo-imported/echo');
- const detail = await data(c, 'search_tool', { tool_id: 'demo-imported/echo' });
+ assert.equal(cjkSearch.matches[0]?.tool_id, 'demo-manual/echo');
+ const detail = await data(c, 'search_tool', { tool_id: 'demo-manual/echo' });
  assert.match(detail.matches[0]?.schemaHash || '', /^[0-9a-f]{12}$/);
+
+ const access = await f.api('profiles','POST',{id:'backup-reader',scope:'selected',servers:['demo-manual']},201);
+ await f.api('descriptions','PUT',{search_tool:'Backed-up search description'});
+ const backup = await f.api('backup','GET');
+ assert.equal(backup.format,'mcp-shelf-backup');
+ assert.equal(backup.version,1);
+ assert.equal(JSON.stringify(backup).includes(f.app.config.get().token),false);
+ assert.equal(JSON.stringify(backup).includes(access.token),false);
+ assert.deepEqual(backup.servers.find(s=>s.id==='demo-manual').allowlist,['echo']);
+ assert.equal(backup.servers.find(s=>s.id==='demo-manual').approvedHashes.echo,detail.matches[0].schemaHash);
+ await f.api('profiles/backup-reader','PUT',{scope:'selected',servers:[]});
+ await f.api('servers/demo-manual','DELETE');
+ await f.api('descriptions','PUT',{search_tool:'Changed after backup'});
+ await f.api('restore','POST',{mcpServers:{'external':{url:'https://example.com/mcp'}}},400);
+ await f.api('restore','POST',{...backup,servers:[backup.servers[0],backup.servers[0]]},400);
+ assert.equal((await f.get()).servers.some(s=>s.id==='demo-manual'),false);
+ await f.api('restore','POST',backup);
+ assert.deepEqual(await f.api('backup','GET'),backup);
+ assert.equal(f.app.config.get().profiles[0].token,access.token);
+ assert.deepEqual(await data(c,'call_tool',{tool_id:'demo-manual/echo',arguments:{text:'Restored tool'}}),{echo:'Restored tool'});
+
 
  // 8. SSE /mcp-events requires Bearer auth and pushes tools_changed on allowlist update
  assert.equal((await fetch(f.app.url + '/mcp-events')).status, 401);

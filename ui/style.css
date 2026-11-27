@@ -1022,27 +1022,6 @@ select.auto-select {
 }
 
 /* Import preview */
-.import-list {
-  display: grid;
-  gap: 8px;
-}
-
-.import-item {
-  padding: 11px 13px;
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  background: rgba(255, 254, 251, 0.78);
-  font-size: 12px;
-}
-
-.import-item-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 3px;
-}
-
 /* Stacks & snippets */
 .stack {
   display: grid;

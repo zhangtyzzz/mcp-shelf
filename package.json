@@ -1,6 +1,6 @@
 {
   "name": "mcp-shelf",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "description": "Local & self-hosted MCP gateway and workbench — configure upstream MCP servers once and share them across Grok Build, Codex, Claude Code, and Google Antigravity.",
   "repository": {
     "type": "git",
@@ -41,8 +41,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
-    "ajv": "8.20.0",
-    "smol-toml": "1.9.1"
+    "ajv": "8.20.0"
   },
   "devDependencies": {
     "playwright-core": "1.65.1"

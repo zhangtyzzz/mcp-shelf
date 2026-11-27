@@ -17,6 +17,7 @@ import {
   APP_VERSION,
   BUILTIN_TEMPLATES,
   adminPasswordFromEnv,
+  createBackup,
   defaults,
   demoSource,
   descriptions,
@@ -27,11 +28,11 @@ import {
   normalizeSettings,
   oauthAccessTtlSecondsFromEnv,
   openConfig,
-  parseImportConfig,
   portFromEnv,
   profile as parseProfile,
   publicUrlFromEnv,
   rec,
+  restoreBackup,
   same,
   signature,
   source,
@@ -59,11 +60,11 @@ const security = {
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 };
 
-async function readBody(req) {
+async function readBody(req, limit = 1_048_576) {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) {
     throw fail('Expected application/json', 415);
   }
-  if (Number(req.headers['content-length']) > 1_048_576) {
+  if (Number(req.headers['content-length']) > limit) {
     req.resume();
     throw fail('Request too large', 413);
   }
@@ -71,7 +72,7 @@ async function readBody(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 1_048_576) throw fail('Request too large', 413);
+    if (size > limit) throw fail('Request too large', 413);
     chunks.push(chunk);
   }
   try {
@@ -677,7 +678,8 @@ export async function launch({
           servers: cat.snapshot(),
           profiles: (cfg.get().profiles || []).map(({ token: _tok, ...rest }) => rest),
           templates: BUILTIN_TEMPLATES,
-          defaults,
+          createBackup,
+  defaults,
           descriptions: cfg.get().descriptions,
           settings: cfg.get().settings,
           meta: meta.map(({ name, title }) => ({ name, title })),
@@ -780,30 +782,30 @@ export async function launch({
         return json(200, { ok: true, settings: next });
       }
 
-      if (method === 'GET' && route === '/api/export') {
-        const mcpServers = Object.fromEntries(
-          cfg.get().servers.map((s) => [
-            s.id,
-            s.transport === 'stdio'
-              ? {
-                  label: s.label,
-                  description: s.description,
-                  command: s.command,
-                  args: s.args,
-                  ...(s.cwd ? { cwd: s.cwd } : {}),
-                  ...(s.envKeys?.length ? { envKeys: s.envKeys } : {}),
-                  enabled: s.enabled
-                }
-              : {
-                  label: s.label,
-                  description: s.description,
-                  url: s.url,
-                  ...(s.bearerEnv ? { bearerEnv: s.bearerEnv } : {}),
-                  enabled: s.enabled
-                }
-          ])
-        );
-        return json(200, { mcpServers });
+      if (method === 'GET' && route === '/api/backup') {
+        return json(200, createBackup(cfg.get()));
+      }
+
+      if (method === 'POST' && route === '/api/restore') {
+        const backup = await readBody(req, 48 * 1024 * 1024);
+        const previous = cfg.get();
+        const next = restoreBackup(backup, previous);
+        const connections = new Map(next.servers.map((item) => [item.id, item]));
+        const profiles = new Set(next.profiles.map((item) => item.id));
+        cfg.save(next);
+        for (const old of previous.servers) {
+          const restored = connections.get(old.id);
+          const changed = !restored || signature(restored) !== signature(old);
+          if (changed) oauthStore.clear(old.id);
+          if (changed || restored.enabled !== old.enabled) cat.invalidate(old.id);
+        }
+        for (const old of previous.profiles) {
+          if (!profiles.has(old.id)) oauthServer.revokeByProfile(old.id);
+        }
+        cat.applySettings();
+        cat.notifyIfChanged();
+        refreshToolStreams();
+        return json(200, { ok: true });
       }
 
       if (method === 'PUT' && route === '/api/descriptions') {
@@ -811,49 +813,6 @@ export async function launch({
         cfg.save({ ...cfg.get(), descriptions: next });
         cat.notifyIfChanged();
         return json(200, { ok: true });
-      }
-
-      if (method === 'POST' && route === '/api/import/preview') {
-        const payload = await readBody(req);
-        if (!rec(payload)) throw fail('无效请求体');
-        const parsed = parseImportConfig(payload.text);
-        const existing = new Set(cfg.get().servers.map((s) => s.id));
-        const items = parsed.items.map((item) => ({
-          ...item,
-          conflict: existing.has(item.server.id)
-        }));
-        return json(200, { format: parsed.format, items, skipped: parsed.skipped });
-      }
-
-      if (method === 'POST' && route === '/api/import') {
-        const payload = await readBody(req);
-        if (!rec(payload)) throw fail('无效请求体');
-        const parsed = parseImportConfig(payload.text);
-        const now = cfg.get();
-        const existing = new Set(now.servers.map((s) => s.id));
-        const toAdd = [];
-        const skipped = [...parsed.skipped];
-        for (const item of parsed.items) {
-          if (existing.has(item.server.id)) {
-            skipped.push({ id: item.server.id, reason: '连接 ID 已存在，已跳过' });
-            continue;
-          }
-          existing.add(item.server.id);
-          toAdd.push(item.server);
-        }
-        if (now.servers.length + toAdd.length > 40) {
-          throw fail('导入后将超过 40 个连接上限。');
-        }
-        if (toAdd.length) {
-          cfg.save({ ...now, servers: [...now.servers, ...toAdd] });
-          cat.notifyIfChanged();
-        }
-        return json(201, {
-          ok: true,
-          format: parsed.format,
-          imported: toAdd.map((s) => s.id),
-          skipped
-        });
       }
 
       if (method === 'POST' && route === '/api/tools/test') {

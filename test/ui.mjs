@@ -142,22 +142,32 @@ try {
   await p.getByText('Test Server', { exact: true }).waitFor();
   assert.equal(await p.getByText('Disabled', { exact: true }).count(), 1);
 
-  // Import connection via dialog
-  await p.getByRole('button', { name: 'Import', exact: true }).click();
-  const imp = p.getByRole('dialog');
-  await imp
-    .locator('#import-text')
-    .fill(JSON.stringify({ mcpServers: {
-      'imported-http': { serverUrl: 'https://example.com/mcp', enabled: false },
-      'invalid-args': { command: 'npx', args: 'invalid' }
-    } }));
-  await imp.getByRole('button', { name: 'Preview', exact: true }).click();
-  await imp.getByText('Will import', { exact: true }).waitFor();
-  await imp.getByRole('button', { name: 'Import', exact: true }).click();
-  await imp.getByText('Imported from JSON (1)', { exact: true }).waitFor();
-  await imp.getByText('invalid-args', { exact: true }).waitFor();
-  await imp.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await p.getByText('imported-http', { exact: true }).waitFor();
+  // Only Shelf backup files can be restored.
+  assert.equal(await p.getByRole('button', { name: 'Import', exact: true }).count(), 0);
+  const downloading = p.waitForEvent('download');
+  await p.getByRole('button', { name: 'Download Backup', exact: true }).click();
+  const downloaded = await downloading;
+  const backupPath = await downloaded.path();
+  const backup = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+  assert.equal(backup.format, 'mcp-shelf-backup');
+  assert.equal(backup.servers.find(s => s.id === 'sleeping-http').label, 'Test Server');
+
+  await p.getByRole('button', { name: 'Restore Backup', exact: true }).click();
+  const restore = p.getByRole('dialog');
+  const file = restore.getByLabel('MCP Shelf backup file');
+  const restoreButton = restore.getByRole('button', { name: 'Restore Backup', exact: true });
+  await file.setInputFiles({
+    name: 'external-mcp.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from('{"mcpServers":{}}')
+  });
+  p.once('dialog', dialog => dialog.accept());
+  await restoreButton.click();
+  await restore.getByRole('alert').getByText('Expected a supported MCP Shelf backup file.').waitFor();
+  await file.setInputFiles(backupPath);
+  p.once('dialog', dialog => dialog.accept());
+  await restoreButton.click();
+  await p.getByText('MCP Shelf backup restored.', { exact: true }).waitFor();
 
   // OAuth uses a native browser form, so Chromium controls the Origin header.
   const adminPassword = 'browser-test-password';
@@ -216,7 +226,7 @@ try {
 
   assert.deepEqual(errors, []);
   console.log(
-    'PASS Chromium browser: i18n (en/zh-CN), desktop/mobile layout, connection editor, config import, permissions, descriptions, search, playground, activity logs, live MCP and OAuth authorization.'
+    'PASS Chromium browser: i18n (en/zh-CN), desktop/mobile layout, connection editor, backup/restore, permissions, descriptions, search, playground, activity logs, live MCP and OAuth authorization.'
   );
 } finally {
   await browser?.close();

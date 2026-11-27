@@ -77,5 +77,5 @@ node test/claude.mjs
 ## Security Invariants
 
 - Never weaken `Host`, `Origin`, `Sec-Fetch-Site`, CSRF, or remote-mode session checks.
-- Never store plaintext upstream secrets in `config.json` or exported JSON; always reference by env var name.
+- Never store plaintext upstream secrets in `config.json` or downloaded backups; always reference by env var name.
 - Newly discovered tools must remain denied by default; changing upstream command, URL, or credential env names must reset approvals.

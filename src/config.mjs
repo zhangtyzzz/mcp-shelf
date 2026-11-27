@@ -3,10 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { parse as parseToml } from 'smol-toml';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.8.6';
+export const APP_VERSION = '0.8.7';
 const CONFIG_VERSION = 2;
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));
@@ -400,119 +399,44 @@ export function openConfig(dir) {
   return store;
 }
 
-function normalizeId(rawId) {
-  let id = String(rawId || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  if (!id || !/^[a-z]/.test(id)) id = 'mcp-' + id;
-  return id.slice(0, 48);
+const BACKUP_FORMAT = 'mcp-shelf-backup';
+const BACKUP_VERSION = 1;
+
+export function createBackup(config) {
+  return {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    descriptions: config.descriptions,
+    settings: config.settings,
+    profiles: config.profiles.map(({ token: _token, ...profile }) => profile),
+    servers: config.servers
+  };
 }
 
-/**
- * Parse pasted Claude/Antigravity/Cursor JSON (`mcpServers`) or Codex TOML (`[mcp_servers.*]`)
- * into validated MCP Shelf connection candidates. Secret env values are never stored.
- */
-export function parseImportConfig(rawText) {
-  const input = limited(rawText, '导入内容', 200_000, true);
-  let entries;
-  let format;
-
-  if (input.startsWith('{')) {
-    let parsed;
-    try {
-      parsed = JSON.parse(input);
-    } catch {
-      throw fail('JSON 格式无效，请检查括号与引号。');
-    }
-    if (Object.hasOwn(parsed, 'mcpServers')) {
-      if (!rec(parsed.mcpServers)) throw fail('mcpServers 必须是对象。');
-      entries = parsed.mcpServers;
-    } else if (['command', 'url', 'serverUrl'].some((key) => Object.hasOwn(parsed, key))) {
-      entries = { [parsed.id || 'imported']: parsed };
-    } else {
-      entries = parsed;
-    }
-    format = 'json';
-  } else {
-    try {
-      entries = parseToml(input, { integersAsBigInt: 'asNeeded', unsafeKeyBehaviour: 'throw' }).mcp_servers;
-    } catch (err) {
-      const at = Number.isInteger(err.line) ? `（第 ${err.line} 行）` : '';
-      throw fail(`TOML 格式无效${at}，请检查配置文件。`);
-    }
-    if (!rec(entries) || entries instanceof Date) {
-      throw fail('未找到 Codex config.toml 的 mcp_servers 配置表。');
-    }
-    format = 'toml';
+export function restoreBackup(backup, current) {
+  if (!rec(backup) || backup.format !== BACKUP_FORMAT || backup.version !== BACKUP_VERSION) {
+    throw fail('Expected a supported MCP Shelf backup file.');
   }
-
-  const items = [];
-  const skipped = [];
-  const seen = new Set();
-
-  for (const [rawKey, cfg] of Object.entries(entries)) {
-    if (!rec(cfg)) {
-      skipped.push({ id: rawKey, reason: '配置项不是对象' });
-      continue;
-    }
-    const id = normalizeId(cfg.id || rawKey);
-    if (id === 'mcp-shelf' || id === 'mcp_shelf') {
-      skipped.push({ id: rawKey, reason: '跳过 MCP Shelf 自身，避免递归环路' });
-      continue;
-    }
-    if (seen.has(id)) {
-      skipped.push({ id: rawKey, reason: `规范化后的 ID (${id}) 重复` });
-      continue;
-    }
-
-    const warnings = [];
-    const candidate = {
-      id,
-      label: typeof cfg.label === 'string' && cfg.label.trim() ? cfg.label.trim() : rawKey,
-      description: typeof cfg.description === 'string' ? cfg.description : '',
-      enabled: cfg.enabled === false || cfg.disabled === true ? false : true,
-      allowlist: []
-    };
-
-    try {
-      const hasCommand = Object.hasOwn(cfg, 'command');
-      const hasUrl = Object.hasOwn(cfg, 'url');
-      const hasServerUrl = Object.hasOwn(cfg, 'serverUrl');
-      if (hasCommand && (hasUrl || hasServerUrl)) throw fail('command 与 MCP URL 不能同时设置。');
-      if (hasUrl && hasServerUrl && cfg.url !== cfg.serverUrl) {
-        throw fail('url 与 serverUrl 指向不同的值。');
-      }
-      if (hasCommand) {
-        candidate.transport = 'stdio';
-        candidate.command = cfg.command;
-        candidate.args = cfg.args;
-        candidate.cwd = cfg.cwd;
-        const envKeys = array(cfg.envKeys, isAllowedEnvName, '环境变量名', 50);
-        const keys = rec(cfg.env) ? Object.keys(cfg.env).filter((k) => envName.test(k)) : [];
-        if (cfg.env !== undefined && !rec(cfg.env)) throw fail('env 必须是对象。');
-        if (keys.length) {
-          warnings.push(`仅导入环境变量名 (${keys.join(', ')})，未保存明文值，请在启动网关的环境中设置。`);
-        }
-        candidate.envKeys = [...new Set([...envKeys, ...keys])];
-      } else if (hasUrl || hasServerUrl) {
-        candidate.transport = 'http';
-        candidate.url = hasUrl ? cfg.url : cfg.serverUrl;
-        candidate.bearerEnv = cfg.bearerEnv === undefined ? cfg.bearer_token_env_var : cfg.bearerEnv;
-        if (rec(cfg.headers) && Object.keys(cfg.headers).length && !candidate.bearerEnv) {
-          warnings.push('检测到自定义 headers，未导入明文凭据；如需认证请配置 Bearer 环境变量名。');
-        }
-      } else {
-        throw fail('缺少 command、url 或 serverUrl。');
-      }
-      const validated = source(candidate);
-      seen.add(id);
-      items.push({ server: validated, warnings });
-    } catch (err) {
-      skipped.push({ id: rawKey, reason: err.message });
-    }
+  if (!Array.isArray(backup.servers) || backup.servers.length > 40 ||
+      !Array.isArray(backup.profiles) || backup.profiles.length > 30 ||
+      !rec(backup.descriptions) || !rec(backup.settings)) {
+    throw fail('Invalid MCP Shelf backup.');
   }
-
-  return { format, items, skipped };
+  const servers = backup.servers.map(source);
+  const profiles = backup.profiles.map((entry) => {
+    if (!rec(entry)) throw fail('Invalid access profile in backup.');
+    const existing = current.profiles.find((item) => item.id === entry.id);
+    return profile({ ...entry, token: existing?.token });
+  });
+  if (new Set(servers.map((item) => item.id)).size !== servers.length ||
+      new Set(profiles.map((item) => item.id)).size !== profiles.length) {
+    throw fail('Duplicate connection or profile IDs in backup.');
+  }
+  return {
+    ...current,
+    descriptions: descriptions(backup.descriptions),
+    settings: normalizeSettings(backup.settings),
+    profiles,
+    servers
+  };
 }
