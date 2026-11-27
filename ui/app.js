@@ -171,7 +171,7 @@ async function run(e, fn, message) {
   }
 }
 
-const update = ({ tools, status, error, missingEnvKeys, ...s }, more) =>
+const update = ({ tools, status, error, missingEnvKeys, oauthStatus, ...s }, more) =>
   request('servers/' + s.id, 'PUT', { ...s, ...more });
 
 function skeletonFromSchema(schema) {
@@ -262,6 +262,44 @@ function sources() {
       ),
       actions(
         pill(t(statusKeys[s.status] || 'status.idle'), s.status === 'ready' ? 'ok' : s.status === 'error' ? 'bad' : ''),
+        s.oauthStatus
+          ? pill(
+              s.oauthStatus === 'connected' ? t('sources.oauthConnected') : t('sources.oauthRequired'),
+              s.oauthStatus === 'connected' ? 'ok' : 'warn'
+            )
+          : null,
+        s.enabled && s.authMode === 'oauth' && s.oauthStatus !== 'connected'
+          ? btn(
+              t('sources.oauthSignIn'),
+              async (e) => {
+                const target = e.currentTarget;
+                target.disabled = true;
+                try {
+                  const res = await request('servers/' + s.id + '/oauth/start', 'POST');
+                  if (res.status === 'authorized') {
+                    await load();
+                    render();
+                    toast(t('toast.oauthAuthorized'));
+                  } else if (res.authorizeUrl) {
+                    window.open(res.authorizeUrl, '_blank', 'noopener,noreferrer');
+                    toast(t('toast.oauthStarted'));
+                  }
+                } catch (err) {
+                  toast(err.message, true);
+                } finally {
+                  target.disabled = false;
+                }
+              },
+              'mini primary'
+            )
+          : null,
+        s.authMode === 'oauth' && s.oauthStatus === 'connected'
+          ? btn(
+              t('sources.oauthSignOut'),
+              (e) => run(e, () => request('servers/' + s.id + '/oauth/logout', 'POST'), t('toast.oauthCleared')),
+              'mini'
+            )
+          : null,
         s.enabled
           ? btn(
               t('sources.refresh'),
@@ -328,6 +366,7 @@ function sources() {
       t('sources.title'),
       t('sources.sub'),
       actions(
+        btn(t('sources.templates'), (e) => openTemplates(e.currentTarget)),
         btn(t('sources.import'), (e) => openImport(e.currentTarget)),
         btn(t('sources.add'), (e) => openEditor(null, e.currentTarget), 'primary')
       )
@@ -608,13 +647,28 @@ function toolRows(body) {
                   el(
                     'div',
                     { class: 'tool-title' },
+                    tl.icons?.[0]?.src
+                      ? el('img', { class: 'tool-icon', src: tl.icons[0].src, alt: '' })
+                      : null,
                     el('h2', { class: 'mono' }, tl.tool_id),
+                    tl.title ? el('span', { class: 'sub' }, tl.title) : null,
+                    tl.schemaDrifted ? pill(t('tools.schemaDrifted'), 'warn') : null,
                     ...annotationBadges(tl.annotations)
                   ),
                   el('p', {}, tl.description || t('tools.noDesc'))
                 ),
                 actions(
-                  pill(has && s.enabled ? t('tools.allowed') : t('tools.blocked'), has && s.enabled ? 'ok' : ''),
+                  pill(
+                    has && s.enabled && !tl.schemaDrifted ? t('tools.allowed') : t('tools.blocked'),
+                    has && s.enabled && !tl.schemaDrifted ? 'ok' : tl.schemaDrifted ? 'warn' : ''
+                  ),
+                  tl.schemaDrifted
+                    ? btn(
+                        t('tools.reapprove'),
+                        (e) => run(e, () => update(s, { reapproveTool: tl.name }), t('toast.reapproved')),
+                        'mini primary'
+                      )
+                    : null,
                   btn(
                     has ? t('tools.revoke') : t('tools.allow'),
                     (e) =>
@@ -842,12 +896,24 @@ function logsView() {
     t('logs.recordDetails')
   );
 
+  const driftCheck = el(
+    'label',
+    { class: 'check' },
+    el('input', {
+      type: 'checkbox',
+      checked: currentSettings.strictSchemaDrift !== false,
+      on: { change: (e) => saveSetting(e, { strictSchemaDrift: e.target.checked }) }
+    }),
+    t('logs.strictDrift')
+  );
+
   const settingsBar = el(
     'div',
     { class: 'settings-bar' },
     el('label', { class: 'settings-field' }, t('logs.maxEntries'), limitSelect),
     detailsCheck,
-    el('label', { class: 'settings-field' }, t('logs.idleLabel'), idleSelect)
+    el('label', { class: 'settings-field' }, t('logs.idleLabel'), idleSelect),
+    driftCheck
   );
 
   const autoCheck = el(
@@ -1105,12 +1171,93 @@ function clients() {
         ]
       : [];
 
+  const profilesList = state.profiles || [];
+  const profileRows = profilesList.map((pr) => {
+    const scopeLabel = pr.servers?.length ? pr.servers.join(', ') : t('profiles.allServers');
+    const tokOut = el('div');
+    return el(
+      'article',
+      { class: 'row' },
+      el(
+        'div',
+        { class: 'row-main' },
+        el('span', { class: 'symbol' }, '◎'),
+        el(
+          'div',
+          {},
+          el('h3', {}, pr.label),
+          el('div', { class: 'sub mono' }, `${pr.id} · ${scopeLabel}`),
+          pr.description ? el('p', {}, pr.description) : null,
+          tokOut
+        )
+      ),
+      actions(
+        btn(
+          t('profiles.copyToken'),
+          async (e) => {
+            const target = e.currentTarget;
+            target.disabled = true;
+            try {
+              const res = await request(`profiles/${pr.id}/token`, 'POST');
+              const ep = (state.mode === 'remote' ? remoteUrl : 'http://127.0.0.1:' + state.port + '/mcp') + '/' + pr.id;
+              tokOut.replaceChildren(el('pre', { class: 'snippet' }, `${ep}\nAuthorization: Bearer ${res.token}`));
+              try {
+                await navigator.clipboard.writeText(res.token);
+              } catch {}
+              toast(t('toast.profileTokenCopied'));
+            } catch (err) {
+              toast(err.message, true);
+            } finally {
+              target.disabled = false;
+            }
+          },
+          'mini'
+        ),
+        btn(
+          t('profiles.rotate'),
+          async (e) => {
+            if (!confirm(t('clients.confirmRotate'))) return;
+            const target = e.currentTarget;
+            target.disabled = true;
+            try {
+              const res = await request(`profiles/${pr.id}/rotate`, 'POST');
+              tokOut.replaceChildren(el('pre', { class: 'snippet' }, res.token));
+              toast(t('toast.profileRotated'));
+            } catch (err) {
+              toast(err.message, true);
+            } finally {
+              target.disabled = false;
+            }
+          },
+          'mini'
+        ),
+        btn(t('profiles.edit'), (e) => openProfileEditor(pr, e.currentTarget), 'mini'),
+        btn(
+          t('profiles.delete'),
+          (e) => {
+            if (!confirm(t('profiles.confirmDelete', { id: pr.id }))) return;
+            run(e, () => request('profiles/' + pr.id, 'DELETE'), t('toast.profileDeleted'));
+          },
+          'mini danger'
+        )
+      )
+    );
+  });
+
+  const profilesPanel = panel(
+    t('profiles.title'),
+    btn(t('profiles.add'), (e) => openProfileEditor(null, e.currentTarget), 'mini primary'),
+    el('div', { class: 'inside' }, el('p', {}, t('profiles.sub'))),
+    profileRows.length ? profileRows : el('div', { class: 'inside' }, el('p', { class: 'sub' }, t('profiles.empty')))
+  );
+
   return [
     hero(t('clients.kicker'), t('clients.title'), t('clients.sub')),
     el(
       'div',
       { class: 'stack' },
       tokenPanel,
+      profilesPanel,
       ...remoteSnippets,
       snippet(t('clients.grokTitle'), t('clients.grokDesc'), gr),
       snippet(t('clients.codexTitle'), t('clients.codexDesc'), toml),
@@ -1155,29 +1302,32 @@ function transport() {
   $('#http').hidden = std;
   f('command').required = std;
   f('url').required = !std;
+  const authMode = f('authMode').value;
+  $('#bearer-wrap').hidden = std || authMode !== 'bearer';
 }
 
-function openEditor(s, button) {
-  editing = s;
+function openEditor(s, button, isPrefill = false) {
+  editing = isPrefill ? null : s;
   originButton = button;
   form.reset();
-  f('id').readOnly = !!s;
-  for (const k of ['id', 'label', 'description', 'transport', 'command', 'cwd', 'url', 'bearerEnv']) {
+  f('id').readOnly = !!editing;
+  for (const k of ['id', 'label', 'description', 'transport', 'command', 'cwd', 'url', 'authMode', 'bearerEnv']) {
     if (s?.[k]) f(k).value = s[k];
   }
+  if (!s?.authMode) f('authMode').value = s?.bearerEnv ? 'bearer' : 'none';
   f('enabled').checked = s ? s.enabled : true;
   f('args').value = s?.args ? JSON.stringify(s.args) : '';
   f('envKeys').value = s?.envKeys?.join(', ') || '';
-  $('#form-title').textContent = s ? t('dialog.editTitle') : t('dialog.addTitle');
+  $('#form-title').textContent = editing ? t('dialog.editTitle') : t('dialog.addTitle');
   $('#error').textContent = '';
   $('#delete-source')?.remove();
-  if (s) {
+  if (editing) {
     const remove = btn(
       t('dialog.delete'),
       (e) => {
         if (confirm(t('dialog.confirmDelete'))) {
           dialog.close();
-          void run(e, () => request('servers/' + s.id, 'DELETE'), t('toast.deleted'));
+          void run(e, () => request('servers/' + editing.id, 'DELETE'), t('toast.deleted'));
         }
       },
       'danger'
@@ -1192,6 +1342,7 @@ function openEditor(s, button) {
 $('#x').onclick = $('#cancel').onclick = () => dialog.close();
 dialog.addEventListener('close', () => originButton?.focus());
 f('transport').addEventListener('change', transport);
+f('authMode').addEventListener('change', transport);
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1209,7 +1360,7 @@ form.addEventListener('submit', async (e) => {
   }
   const data = {
     ...Object.fromEntries(
-      ['id', 'label', 'description', 'transport', 'command', 'cwd', 'url', 'bearerEnv'].map((k) => [
+      ['id', 'label', 'description', 'transport', 'command', 'cwd', 'url', 'authMode', 'bearerEnv'].map((k) => [
         k,
         f(k).value
       ])
@@ -1229,6 +1380,112 @@ form.addEventListener('submit', async (e) => {
   } catch (err) {
     if (dialog.open) error.textContent = err.message;
     else toast(err.message, true);
+  } finally {
+    submit.disabled = false;
+  }
+});
+
+// Curated templates dialog
+const templatesDialog = $('#templates-dialog');
+const templatesList = $('#templates-list');
+
+function openTemplates(button) {
+  originButton = button;
+  const existingIds = new Set((state.servers || []).map((s) => s.id));
+  templatesList.replaceChildren(
+    ...(state.templates || []).map((tpl) => {
+      const exists = existingIds.has(tpl.id);
+      return el(
+        'div',
+        { class: 'template-card' },
+        el(
+          'div',
+          { class: 'template-card-head' },
+          el('strong', {}, tpl.label),
+          pill(tpl.transport === 'http' ? (tpl.authMode === 'oauth' ? 'HTTP · OAuth' : 'HTTP') : 'stdio')
+        ),
+        el('p', {}, tpl.description),
+        actions(
+          exists
+            ? pill(t('templates.added'), 'ok')
+            : btn(
+                t('templates.use'),
+                () => {
+                  templatesDialog.close();
+                  openEditor(tpl, button, true);
+                },
+                'mini primary'
+              )
+        )
+      );
+    })
+  );
+  templatesDialog.showModal();
+}
+
+$('#templates-x').onclick = $('#templates-close').onclick = () => templatesDialog.close();
+templatesDialog.addEventListener('close', () => originButton?.focus());
+
+// Access Profile editor dialog
+const profileDialog = $('#profile-dialog');
+const profileForm = $('#profile-form');
+const pf = (name) => profileForm.elements.namedItem(name);
+let editingProfile = null;
+
+function openProfileEditor(pr, button) {
+  editingProfile = pr;
+  originButton = button;
+  profileForm.reset();
+  pf('id').readOnly = !!pr;
+  if (pr) {
+    pf('id').value = pr.id;
+    pf('label').value = pr.label || '';
+    pf('description').value = pr.description || '';
+  }
+  $('#profile-title').textContent = pr ? t('profiles.dialogEdit') : t('profiles.dialogAdd');
+  $('#profile-error').textContent = '';
+  const selected = new Set(pr?.servers || []);
+  $('#profile-servers').replaceChildren(
+    ...(state.servers || []).map((s) =>
+      el(
+        'label',
+        { class: 'check' },
+        el('input', { type: 'checkbox', name: 'srv', value: s.id, checked: selected.has(s.id) }),
+        `${s.label} (${s.id})`
+      )
+    )
+  );
+  profileDialog.showModal();
+}
+
+$('#profile-x').onclick = $('#profile-cancel').onclick = () => profileDialog.close();
+profileDialog.addEventListener('close', () => originButton?.focus());
+
+profileForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errNode = $('#profile-error');
+  errNode.textContent = '';
+  const servers = [...profileForm.querySelectorAll('input[name="srv"]:checked')].map((x) => x.value);
+  const payload = {
+    id: pf('id').value,
+    label: pf('label').value,
+    description: pf('description').value,
+    servers
+  };
+  const submit = profileForm.querySelector('[type=submit]');
+  submit.disabled = true;
+  try {
+    if (editingProfile) {
+      await request('profiles/' + editingProfile.id, 'PUT', payload);
+    } else {
+      await request('profiles', 'POST', payload);
+    }
+    profileDialog.close();
+    await load();
+    render();
+    toast(t('toast.profileSaved'));
+  } catch (err) {
+    errNode.textContent = err.message;
   } finally {
     submit.disabled = false;
   }

@@ -60,7 +60,7 @@
         </button>
       </nav>
       <footer>
-        <i class="live"></i> <span id="mode-label" data-i18n="footer.local">Local instance</span> <small>v0.6</small>
+        <i class="live"></i> <span id="mode-label" data-i18n="footer.local">Local instance</span> <small>v0.7</small>
       </footer>
     </aside>
     <main>
@@ -108,7 +108,14 @@
         </div>
         <div id="http" hidden>
           <label><span data-i18n="dialog.url">Streamable HTTP URL</span><input name="url" placeholder="https://example.com/mcp"></label>
-          <label><span data-i18n="dialog.bearerEnv">Bearer token env var name (optional)</span><input name="bearerEnv" placeholder="MY_MCP_TOKEN"></label>
+          <label><span data-i18n="dialog.authMode">Authentication</span>
+            <select name="authMode">
+              <option value="none" data-i18n="dialog.authNone">None</option>
+              <option value="bearer" data-i18n="dialog.authBearer">Bearer token (env var)</option>
+              <option value="oauth" data-i18n="dialog.authOauth">OAuth 2.1 (browser sign-in)</option>
+            </select>
+          </label>
+          <label id="bearer-wrap" hidden><span data-i18n="dialog.bearerEnv">Bearer token env var name (optional)</span><input name="bearerEnv" placeholder="MY_MCP_TOKEN"></label>
         </div>
         <label class="check"><input type="checkbox" name="enabled" checked><span data-i18n="dialog.enabled">Enable connection</span></label>
         <p class="tip" data-i18n="dialog.tip">Only add trusted servers. Local stdio processes run with your user permissions. Changing command, URL, or credential env names resets existing approvals.</p>
@@ -142,6 +149,53 @@
         <button type="button" id="import-cancel" data-i18n="dialog.cancel">Cancel</button>
         <button type="button" id="import-check" data-i18n="import.preview">Preview</button>
         <button type="submit" id="import-submit" class="primary" data-i18n="import.confirm">Import</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="templates-dialog" aria-labelledby="templates-title">
+    <div>
+      <header>
+        <div>
+          <small data-i18n="templates.kicker">CURATED TEMPLATES</small>
+          <h2 id="templates-title" data-i18n="templates.title">Quick-Add Classic MCP Servers</h2>
+        </div>
+        <button id="templates-x" type="button" class="icon-btn" data-i18n-aria="dialog.close" aria-label="Close">×</button>
+      </header>
+      <div class="form-inner">
+        <p class="sub" data-i18n="templates.sub">Click any template to prefill the connection editor. Review parameters before saving.</p>
+        <div id="templates-list" class="template-grid"></div>
+      </div>
+      <footer class="actions">
+        <button type="button" id="templates-close" data-i18n="dialog.cancel">Cancel</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="profile-dialog" aria-labelledby="profile-title">
+    <form id="profile-form">
+      <header>
+        <div>
+          <small data-i18n="profiles.dialogKicker">ACCESS PROFILE</small>
+          <h2 id="profile-title" data-i18n="profiles.dialogAdd">New Access Profile</h2>
+        </div>
+        <button id="profile-x" type="button" class="icon-btn" data-i18n-aria="dialog.close" aria-label="Close">×</button>
+      </header>
+      <div class="form-inner">
+        <div class="cols">
+          <label><span data-i18n="profiles.id">Profile ID</span><input name="id" required maxlength="48" placeholder="vps-prod"></label>
+          <label><span data-i18n="profiles.label">Display Name</span><input name="label" maxlength="100" placeholder="VPS Production"></label>
+        </div>
+        <label><span data-i18n="profiles.desc">Description (optional)</span><input name="description" maxlength="400" placeholder="Only search & docs tools"></label>
+        <div>
+          <div class="sub" data-i18n="profiles.servers">Allowed MCP Connections (leave all unchecked to allow all)</div>
+          <div id="profile-servers" class="check-grid"></div>
+        </div>
+        <p id="profile-error" class="err" role="alert"></p>
+      </div>
+      <footer class="actions">
+        <button type="button" id="profile-cancel" data-i18n="dialog.cancel">Cancel</button>
+        <button type="submit" class="primary" data-i18n="profiles.save">Save Profile</button>
       </footer>
     </form>
   </dialog>

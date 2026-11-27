@@ -5,6 +5,13 @@ import {fileURLToPath} from 'node:url';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import {
+ CallToolResultSchema,
+ CancelTaskResultSchema,
+ CreateTaskResultSchema,
+ GetTaskResultSchema,
+ ListTasksResultSchema
+} from '@modelcontextprotocol/sdk/types.js';
 import {launch,createMcp,httpClient,demoSource} from '../src/main.mjs';
 const cli=fileURLToPath(new URL('../src/main.mjs',import.meta.url));
 const call=(c,name,arguments_={})=>c.callTool({name,arguments:arguments_});
@@ -359,7 +366,7 @@ test('context budgets (serverReminder & search schema cap), configurable log ret
  await f.api('servers', 'POST', demoSource(['echo']), 201);
  await f.api('settings', 'PUT', { logLimit: 2, logDetails: true, idleMinutes: 5 });
  const stAfter = await f.get();
- assert.deepEqual(stAfter.settings, { logLimit: 2, logDetails: true, idleMinutes: 5 });
+ assert.deepEqual(stAfter.settings, { logLimit: 2, logDetails: true, idleMinutes: 5, strictSchemaDrift: true });
 
  await call(c, 'call_tool', {
   tool_id: 'demo/echo',
@@ -424,4 +431,197 @@ test('context budgets (serverReminder & search schema cap), configurable log ret
  assert.equal(budgeted.matches[1].schema_omitted, true, 'second match degrades when exceeding 16 KB budget');
  assert.deepEqual(budgeted.matches[1].required_params, ['field_0']);
  assert.match(budgeted.schema_budget_note || '', /16 KB/);
+});
+
+test('v0.7.0: access profiles, schema drift lock, MCP 2025-11-25 async tasks, icons metadata, templates, and OAuth 2.1 flow', async t => {
+ const f = await fixture(t);
+
+ // 1. Built-in templates include free Exa Search
+ const initState = await f.get();
+ assert.ok(initState.templates.some(tpl => tpl.id === 'exa' && tpl.url === 'https://mcp.exa.ai/mcp'));
+
+ // 2. Mutable upstream for testing schema drift, icons metadata, and async tasks
+ let schemaVersion = 1;
+ const dynUpstream = http.createServer(async (req, res) => {
+  const s = createMcp(
+   () => ({
+    tools: [
+     {
+      name: 'ping',
+      title: 'Ping Tool',
+      description: 'Ping with optional delay',
+      icons: [
+       { src: 'https://example.com/icon.png', mimeType: 'image/png' },
+       { src: 'javascript:alert(1)' }
+      ],
+      inputSchema:
+       schemaVersion === 1
+        ? { type: 'object', properties: { msg: { type: 'string' }, delayMs: { type: 'number' } }, required: ['msg'], additionalProperties: false }
+        : { type: 'object', properties: { msg: { type: 'string' }, extra: { type: 'boolean' } }, required: ['msg', 'extra'], additionalProperties: false }
+     }
+    ]
+   }),
+   async ({ arguments: a }) => {
+    if (a?.delayMs) await new Promise(r => setTimeout(r, a.delayMs));
+    return { content: [{ type: 'text', text: 'pong:' + a.msg }], structuredContent: { pong: a.msg } };
+   }
+  );
+  const tr = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  await s.connect(tr);
+  res.once('close', () => void s.close());
+  await tr.handleRequest(req, res);
+ });
+ await new Promise(r => dynUpstream.listen(0, '127.0.0.1', r));
+ t.after(() => { dynUpstream.closeAllConnections(); dynUpstream.close(); });
+
+ await f.api('servers', 'POST', demoSource(['echo']), 201);
+ await f.api('servers', 'POST', {
+  id: 'dyn',
+  label: 'Dynamic Server',
+  transport: 'http',
+  url: 'http://127.0.0.1:' + dynUpstream.address().port + '/mcp',
+  enabled: true
+ }, 201);
+ await f.api('servers/dyn/refresh', 'POST');
+
+ // Verify icons metadata sanitized (https kept, javascript stripped) and approve ping (auto-locks hash)
+ const stBefore = await f.get();
+ const dynSnap = stBefore.servers.find(s => s.id === 'dyn');
+ assert.equal(dynSnap.tools[0].title, 'Ping Tool');
+ assert.equal(dynSnap.tools[0].icons.length, 1);
+ assert.equal(dynSnap.tools[0].icons[0].src, 'https://example.com/icon.png');
+ const { tools: _t, status: _s, error: _e, missingEnvKeys: _m, oauthStatus: _o, ...dynClean } = dynSnap;
+ await f.api('servers/dyn', 'PUT', { ...dynClean, allowlist: ['ping'] });
+
+ // 3. Multi-profile isolation: vps-a sees only demo, vps-b sees only dyn
+ const profA = await f.api('profiles', 'POST', { id: 'vps-a', label: 'VPS A', servers: ['demo'] }, 201);
+ const profB = await f.api('profiles', 'POST', { id: 'vps-b', label: 'VPS B', servers: ['dyn'] }, 201);
+
+ const cA = new Client({ name: 'client-a', version: '1' });
+ t.after(() => cA.close());
+ await cA.connect(httpClient(f.app.url + '/mcp/vps-a', { Authorization: 'Bearer ' + profA.token }));
+ assert.match(cA.getInstructions() || '', /- demo \(/);
+ assert.equal((cA.getInstructions() || '').includes('- dyn ('), false);
+ assert.deepEqual((await data(cA, 'list_mcps')).servers.map(s => s.id), ['demo']);
+ assert.equal((await call(cA, 'call_tool', { tool_id: 'dyn/ping', arguments: { msg: 'blocked' } })).isError, true);
+ assert.deepEqual(await data(cA, 'call_tool', { tool_id: 'demo/echo', arguments: { text: 'ok-a' } }), { echo: 'ok-a' });
+
+ // Wrong profile path with another profile's token is rejected
+ assert.equal((await fetch(f.app.url + '/mcp/vps-a', { method: 'POST', headers: { Authorization: 'Bearer ' + profB.token } })).status, 401);
+
+ // 4. MCP 2025-11-25 Async Tasks (create, get, list, result, cancel)
+ const cB = new Client({ name: 'client-b', version: '1' });
+ t.after(() => cB.close());
+ await cB.connect(httpClient(f.app.url + '/mcp', { Authorization: 'Bearer ' + profB.token }));
+
+ const created = await cB.request(
+  {
+   method: 'tools/call',
+   params: { name: 'call_tool', arguments: { tool_id: 'dyn/ping', arguments: { msg: 'async', delayMs: 80 } }, task: { ttl: 60_000 } }
+  },
+  CreateTaskResultSchema
+ );
+ assert.ok(created.task.taskId.startsWith('task_'));
+ const listedTasks = await cB.request({ method: 'tasks/list', params: {} }, ListTasksResultSchema);
+ assert.ok(listedTasks.tasks.some(x => x.taskId === created.task.taskId));
+ const taskResult = await cB.request(
+  { method: 'tasks/result', params: { taskId: created.task.taskId } },
+  CallToolResultSchema
+ );
+ assert.deepEqual(taskResult.structuredContent, { pong: 'async' });
+ const taskStatus = await cB.request({ method: 'tasks/get', params: { taskId: created.task.taskId } }, GetTaskResultSchema);
+ assert.equal(taskStatus.status, 'completed');
+
+ const slowTask = await cB.request(
+  {
+   method: 'tools/call',
+   params: { name: 'call_tool', arguments: { tool_id: 'dyn/ping', arguments: { msg: 'slow', delayMs: 5000 } }, task: { ttl: 60_000 } }
+  },
+  CreateTaskResultSchema
+ );
+ const cancelled = await cB.request({ method: 'tasks/cancel', params: { taskId: slowTask.task.taskId } }, CancelTaskResultSchema);
+ assert.equal(cancelled.status, 'cancelled');
+
+ // 5. Schema drift detection blocks tool until explicitly re-approved
+ schemaVersion = 2;
+ await f.api('servers/dyn/refresh', 'POST');
+ const driftedState = await f.get();
+ const driftedTool = driftedState.servers.find(s => s.id === 'dyn').tools[0];
+ assert.equal(driftedTool.schemaDrifted, true);
+ const driftBlocked = await call(cB, 'call_tool', { tool_id: 'dyn/ping', arguments: { msg: 'hi', extra: true } });
+ assert.equal(driftBlocked.isError, true);
+ assert.match(driftBlocked.content[0].text, /inputSchema changed/i);
+
+ // Re-approve updates locked hash and restores access
+ await f.api('servers/dyn', 'PUT', { ...dynClean, allowlist: ['ping'], reapproveTool: 'ping' });
+ const afterReapprove = await data(cB, 'call_tool', { tool_id: 'dyn/ping', arguments: { msg: 'hi', extra: true } });
+ assert.deepEqual(afterReapprove, { pong: 'hi' });
+
+ // 6. End-to-end OAuth 2.1 + PKCE flow against a local mock OAuth + MCP server
+ let issuedToken = 'oauth-access-token-12345';
+ const oauthServer = http.createServer(async (req, res) => {
+  const base = 'http://127.0.0.1:' + oauthServer.address().port;
+  const u = new URL(req.url, base);
+  if (u.pathname === '/.well-known/oauth-authorization-server') {
+   res.writeHead(200, { 'Content-Type': 'application/json' });
+   return res.end(JSON.stringify({
+    issuer: base,
+    authorization_endpoint: base + '/authorize',
+    token_endpoint: base + '/token',
+    registration_endpoint: base + '/register',
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
+    code_challenge_methods_supported: ['S256']
+   }));
+  }
+  if (u.pathname === '/register' && req.method === 'POST') {
+   let body = '';
+   for await (const ch of req) body += ch;
+   const meta = JSON.parse(body || '{}');
+   res.writeHead(201, { 'Content-Type': 'application/json' });
+   return res.end(JSON.stringify({ ...meta, client_id: 'mock-client-1' }));
+  }
+  if (u.pathname === '/token' && req.method === 'POST') {
+   res.writeHead(200, { 'Content-Type': 'application/json' });
+   return res.end(JSON.stringify({ access_token: issuedToken, token_type: 'Bearer', expires_in: 3600 }));
+  }
+  if (u.pathname === '/mcp') {
+   if (req.headers.authorization !== 'Bearer ' + issuedToken) {
+    res.writeHead(401, { 'WWW-Authenticate': 'Bearer' });
+    return res.end();
+   }
+   const s = createMcp(() => ({ tools: [{ name: 'secret_read', inputSchema: { type: 'object' } }] }), () => ({ content: [{ type: 'text', text: 'ok' }] }));
+   const tr = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+   await s.connect(tr);
+   res.once('close', () => void s.close());
+   return await tr.handleRequest(req, res);
+  }
+  res.writeHead(404);
+  res.end();
+ });
+ await new Promise(r => oauthServer.listen(0, '127.0.0.1', r));
+ t.after(() => { oauthServer.closeAllConnections(); oauthServer.close(); });
+
+ await f.api('servers', 'POST', {
+  id: 'oauth-srv',
+  label: 'OAuth MCP',
+  transport: 'http',
+  url: 'http://127.0.0.1:' + oauthServer.address().port + '/mcp',
+  authMode: 'oauth',
+  enabled: true
+ }, 201);
+ assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').oauthStatus, 'required');
+
+ const started = await f.api('servers/oauth-srv/oauth/start', 'POST');
+ assert.equal(started.status, 'redirect');
+ assert.ok(started.authorizeUrl.includes('/authorize'));
+ const authUrl = new URL(started.authorizeUrl);
+ const cbRes = await fetch(f.app.url + '/api/oauth/callback?code=mock-code-1&state=' + encodeURIComponent(authUrl.searchParams.get('state')));
+ assert.equal(cbRes.status, 200);
+ assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').oauthStatus, 'connected');
+ await f.api('servers/oauth-srv/refresh', 'POST');
+ assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').tools[0].name, 'secret_read');
+
+ await f.api('servers/oauth-srv/oauth/logout', 'POST');
+ assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').oauthStatus, 'required');
 });

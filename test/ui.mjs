@@ -98,14 +98,25 @@ try {
   await p.getByRole('button', { name: 'Clear', exact: true }).click();
   await p.getByText('No activity yet', { exact: true }).waitFor();
 
-  // Clients view & mobile layout check (no horizontal overflow)
+  // Clients view & Access Profile creation + mobile layout check (no horizontal overflow)
   await p.getByRole('button', { name: /Connect Agents/ }).click();
   await p.getByRole('heading', { name: 'Google Antigravity' }).waitFor();
+  await p.getByRole('button', { name: '+ New Profile' }).click();
+  const pd = p.getByRole('dialog');
+  await pd.getByLabel('Profile ID').fill('vps-demo');
+  await pd.getByLabel('Display Name').fill('VPS Demo');
+  await pd.getByRole('button', { name: 'Save Profile' }).click();
+  await p.getByText('VPS Demo', { exact: true }).waitFor();
+
   await p.setViewportSize({ width: 390, height: 844 });
   assert.equal(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 
-  // Add connection manually
+  // Curated Templates dialog (Exa Search)
   await p.getByRole('button', { name: /Connections/ }).click();
+  await p.getByRole('button', { name: 'Templates', exact: true }).click();
+  const td = p.getByRole('dialog');
+  await td.getByText('Exa Search (Free)', { exact: true }).waitFor();
+  await td.getByRole('button', { name: 'Cancel', exact: true }).click();
   await p.getByRole('button', { name: /Add Connection/ }).click();
   const d = p.getByRole('dialog');
   await d.getByLabel('Connection ID').fill('sleeping-http');

@@ -3,7 +3,14 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  CancelTaskRequestSchema,
+  GetTaskPayloadRequestSchema,
+  GetTaskRequestSchema,
+  ListTasksRequestSchema,
+  ListToolsRequestSchema
+} from '@modelcontextprotocol/sdk/types.js';
 import Ajv from 'ajv';
 import Ajv19 from 'ajv/dist/2019.js';
 import Ajv20 from 'ajv/dist/2020.js';
@@ -56,28 +63,59 @@ const gatewayAjv = validators()[0];
 export const checks = new Map(meta.map((s) => [s.name, gatewayAjv.compile(s.inputSchema)]));
 
 export const createMcp = (list, call, opts = APP_NAME) => {
-  const { id = APP_NAME, instructions, listChanged = false } =
+  const { id = APP_NAME, instructions, listChanged = false, taskHandlers = null } =
     typeof opts === 'string' ? { id: opts } : opts || {};
+  const capabilities = {
+    tools: listChanged ? { listChanged: true } : {},
+    ...(taskHandlers
+      ? { tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } } }
+      : {})
+  };
   const serverOpts = {
-    capabilities: { tools: listChanged ? { listChanged: true } : {} },
+    capabilities,
     ...(instructions ? { instructions } : {})
   };
   const s = new Server({ name: id, version: APP_VERSION }, serverOpts);
   s.setRequestHandler(ListToolsRequestSchema, (r, e) => list(r, e));
   s.setRequestHandler(CallToolRequestSchema, (r, e) => call(r.params, e));
+  if (taskHandlers) {
+    s.setRequestHandler(GetTaskRequestSchema, (r) => taskHandlers.get(r.params.taskId));
+    s.setRequestHandler(GetTaskPayloadRequestSchema, (r, e) =>
+      taskHandlers.result(r.params.taskId, e.signal)
+    );
+    s.setRequestHandler(ListTasksRequestSchema, () => taskHandlers.list());
+    s.setRequestHandler(CancelTaskRequestSchema, (r) => taskHandlers.cancel(r.params.taskId));
+  }
   return s;
 };
 
 export const newClient = () => new Client({ name: APP_NAME, version: APP_VERSION });
 
-export const httpClient = (url, headers = {}) =>
+export const httpClient = (url, headers = {}, authProvider = undefined) =>
   new StreamableHTTPClientTransport(new URL(url), {
+    ...(authProvider ? { authProvider } : {}),
     requestInit: { headers },
     fetch: (i, o) => fetch(i, { ...o, redirect: 'error' })
   });
 
 const allowed = (s, t) => s.allowlist.includes(t.name);
 const text = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
+
+function sanitizeIcons(raw) {
+  if (!Array.isArray(raw)) return undefined;
+  const out = [];
+  for (const item of raw) {
+    if (!rec(item) || typeof item.src !== 'string' || item.src.length > 4096) continue;
+    if (!/^(?:https:\/\/|data:image\/(?:png|jpeg|webp|svg\+xml);)/i.test(item.src)) continue;
+    out.push({
+      src: item.src,
+      ...(typeof item.mimeType === 'string' ? { mimeType: item.mimeType.slice(0, 64) } : {}),
+      ...(Array.isArray(item.sizes) ? { sizes: item.sizes.filter((x) => typeof x === 'string').slice(0, 4) } : {})
+    });
+    if (out.length >= 4) break;
+  }
+  return out.length ? out : undefined;
+}
 const cleanMsg = (s, max = 180) =>
   String(s || '')
     .replace(/[\x00-\x1f\x7f]+/g, ' ')
@@ -106,11 +144,14 @@ function missingEnvKeysFor(s) {
   if (s.transport === 'stdio') {
     return (s.envKeys || []).filter((k) => process.env[k] == null || process.env[k] === '');
   }
-  if (s.transport === 'http' && s.bearerEnv && !process.env[s.bearerEnv]) {
+  if (s.transport === 'http' && s.authMode === 'bearer' && s.bearerEnv && !process.env[s.bearerEnv]) {
     return [s.bearerEnv];
   }
   return [];
 }
+
+const profileAllows = (profile, sid) =>
+  !profile || !Array.isArray(profile.servers) || profile.servers.length === 0 || profile.servers.includes(sid);
 
 const SENSITIVE_KEY = /token|secret|password|passwd|api[_-]?key|authorization|cookie|credential/i;
 const SEARCH_SCHEMA_BUDGET = 16_384;
@@ -142,8 +183,9 @@ function previewJson(val, maxChars = 4000) {
 }
 
 export class Catalog {
-  constructor(cfg) {
+  constructor(cfg, oauthStore = null) {
     this.cfg = cfg;
+    this.oauthStore = oauthStore;
     this.states = new Map();
     this.calls = 0;
     this.logs = [];
@@ -152,6 +194,25 @@ export class Catalog {
     this.lastFingerprint = this.fingerprint();
     this.reaper = setInterval(() => this.evictIdle(), 60_000);
     this.reaper.unref();
+  }
+
+  isDrifted(s, t) {
+    if (!allowed(s, t)) return false;
+    const locked = s.approvedHashes?.[t.name];
+    return Boolean(locked && t.schemaHash && locked !== t.schemaHash);
+  }
+
+  isUsable(s, t) {
+    if (!allowed(s, t)) return false;
+    if (this.cfg.get().settings?.strictSchemaDrift !== false && this.isDrifted(s, t)) {
+      return false;
+    }
+    return true;
+  }
+
+  currentHash(serverId, toolNameStr) {
+    const r = this.states.get(serverId);
+    return r?.tools?.find((x) => x.name === toolNameStr)?.schemaHash || null;
   }
 
   evictIdle() {
@@ -214,16 +275,16 @@ export class Catalog {
    * Compact Grok-Build-style server summary listing enabled servers that have approved tools,
    * bounded by a strict character budget so large server counts never blow up tool descriptions.
    */
-  serverReminder(maxChars = 1400) {
+  serverReminder(maxChars = 1400, profile = null) {
     const active = this.cfg
       .get()
-      .servers.filter((s) => s.enabled && s.allowlist.length > 0);
+      .servers.filter((s) => s.enabled && s.allowlist.length > 0 && profileAllows(profile, s.id));
     if (!active.length) return '';
 
     const entries = active.map((s) => {
       const r = this.states.get(s.id);
       const count =
-        r?.status === 'ready' ? r.tools.filter((t) => allowed(s, t)).length : s.allowlist.length;
+        r?.status === 'ready' ? r.tools.filter((t) => this.isUsable(s, t)).length : s.allowlist.length;
       const word = count === 1 ? 'tool' : 'tools';
       const desc = cleanMsg(s.description || (s.label !== s.id ? s.label : ''), 120);
       return {
@@ -269,15 +330,15 @@ export class Catalog {
     );
   }
 
-  metaInstructions() {
-    const reminder = this.serverReminder(1400);
+  metaInstructions(profile = null) {
+    const reminder = this.serverReminder(1400, profile);
     const usage =
       'Upstream tools behind MCP Shelf are proxied and NOT registered directly on the host. Always discover them with MCP Shelf `search_tool` and invoke them via MCP Shelf `call_tool({ tool_id, arguments })`. Never call `server/tool` or `server__tool` directly on the host.';
     return reminder ? `${reminder}\n\n${usage}` : usage;
   }
 
-  metaTools(descs = this.cfg.get().descriptions) {
-    const reminder = this.serverReminder(480);
+  metaTools(descs = this.cfg.get().descriptions, profile = null) {
+    const reminder = this.serverReminder(480, profile);
     return meta.map((t) => {
       const base = descs[t.name];
       const description = reminder ? `${base}\n\n${reminder}` : base;
@@ -398,14 +459,23 @@ export class Catalog {
             stderrTail = (stderrTail + chunk.toString('utf8')).slice(-600);
           });
         } else {
-          if (s.bearerEnv && !process.env[s.bearerEnv]) {
-            error = `缺少上游 Bearer 环境变量：${s.bearerEnv}。`;
-            throw new Error('');
+          if (s.authMode === 'oauth') {
+            if (!this.oauthStore?.hasTokens(s.id)) {
+              error = 'OAuth sign-in required. Click OAuth Sign In in Connections.';
+              throw new Error('');
+            }
+            const provider = this.oauthStore.createProvider(s.id, undefined);
+            transport = httpClient(s.url, {}, provider);
+          } else {
+            if (s.bearerEnv && !process.env[s.bearerEnv]) {
+              error = `Missing Bearer environment variable: ${s.bearerEnv}.`;
+              throw new Error('');
+            }
+            transport = httpClient(
+              s.url,
+              s.bearerEnv ? { Authorization: 'Bearer ' + process.env[s.bearerEnv] } : {}
+            );
           }
-          transport = httpClient(
-            s.url,
-            s.bearerEnv ? { Authorization: 'Bearer ' + process.env[s.bearerEnv] } : {}
-          );
         }
         const c = newClient();
         r.client = c;
@@ -444,6 +514,8 @@ export class Catalog {
           const schemaHash = createHash('sha256').update(JSON.stringify(schema)).digest('hex').slice(0, 12);
           tools.push({
             name: t.name,
+            title: text(t.title, 120) || undefined,
+            icons: sanitizeIcons(t.icons),
             description: text(t.description, 2400),
             inputSchema: schema,
             schemaHash,
@@ -487,11 +559,19 @@ export class Catalog {
       tool_id: s.id + '/' + t.name,
       server_id: s.id,
       name: t.name,
+      ...(t.title ? { title: t.title } : {}),
+      ...(t.icons ? { icons: t.icons } : {}),
       description: Object.hasOwn(s.overrides, t.name) ? s.overrides[t.name] : t.description,
       annotations: t.annotations
     };
     return detail
-      ? { ...row, inputSchema: t.inputSchema, outputSchema: t.outputSchema, schemaHash: t.schemaHash }
+      ? {
+          ...row,
+          inputSchema: t.inputSchema,
+          outputSchema: t.outputSchema,
+          schemaHash: t.schemaHash,
+          schemaDrifted: this.isDrifted(s, t)
+        }
       : row;
   }
 
@@ -502,31 +582,34 @@ export class Catalog {
         ...s,
         status: s.enabled ? r?.status || 'idle' : 'disabled',
         error: s.enabled ? r?.error || null : null,
+        oauthStatus: s.transport === 'http' && s.authMode === 'oauth' ? this.oauthStore?.getStatus(s.id) || 'required' : null,
         missingEnvKeys: missingEnvKeysFor(s),
         tools: r?.tools.map((t) => this.view(s, t, true)) || []
       };
     });
   }
 
-  async scoped(id) {
+  async scoped(id, profile = null) {
     await Promise.all(
       this.cfg
         .get()
-        .servers.filter((s) => s.enabled && s.allowlist.length && (!id || s.id === id))
+        .servers.filter(
+          (s) => s.enabled && s.allowlist.length && profileAllows(profile, s.id) && (!id || s.id === id)
+        )
         .map((s) => this.refresh(s))
     );
     return this.cfg
       .get()
-      .servers.filter((s) => s.enabled && (!id || s.id === id))
+      .servers.filter((s) => s.enabled && profileAllows(profile, s.id) && (!id || s.id === id))
       .map((s) => [s, this.states.get(s.id)]);
   }
 
-  async list({ server_id, offset = 0, limit = 20 }) {
+  async list({ server_id, offset = 0, limit = 20 }, profile = null) {
     const start = Date.now();
-    const list = await this.scoped(server_id);
+    const list = await this.scoped(server_id, profile);
     const out = {
       servers: list.slice(offset, offset + limit).map(([s, r]) => {
-        const tools = r?.tools.filter((t) => allowed(s, t)) || [];
+        const tools = r?.tools.filter((t) => this.isUsable(s, t)) || [];
         return {
           id: s.id,
           label: s.label,
@@ -541,34 +624,35 @@ export class Catalog {
       next_offset: offset + limit < list.length ? offset + limit : null
     };
     this.record({
-      source: 'agent',
+      source: profile ? `profile:${profile.id}` : 'agent',
       action: 'list_mcps',
       target: server_id || '*',
       status: 'ok',
       durationMs: Date.now() - start,
-      detail: `${out.servers.length} 个连接`
+      detail: `${out.servers.length} servers`
     });
     return out;
   }
 
-  async search({ server_id, tool_id, query = '', offset = 0, limit = 5, include_schema = true }) {
+  async search({ server_id, tool_id, query = '', offset = 0, limit = 5, include_schema = true }, profile = null) {
     const start = Date.now();
+    const logSource = profile ? `profile:${profile.id}` : 'agent';
     const id = tool_id?.split('/')[0];
     if (id && server_id && server_id !== id) {
       this.record({
-        source: 'agent',
+        source: logSource,
         action: 'search_tool',
         target: tool_id,
         status: 'ok',
         durationMs: Date.now() - start,
-        detail: '0 条匹配'
+        detail: '0 matches'
       });
       return { matches: [], total: 0, next_offset: null };
     }
-    const rows = await this.scoped(id || server_id);
+    const rows = await this.scoped(id || server_id, profile);
     if (id) {
       const [s, r] = rows[0] || [];
-      const t = r?.tools.find((t) => allowed(s, t) && s.id + '/' + t.name === tool_id);
+      const t = r?.tools.find((t) => this.isUsable(s, t) && s.id + '/' + t.name === tool_id);
       const out = {
         matches: t ? [this.view(s, t, true)] : [],
         total: t ? 1 : 0,
@@ -580,12 +664,12 @@ export class Catalog {
           : {})
       };
       this.record({
-        source: 'agent',
+        source: logSource,
         action: 'search_tool',
         target: tool_id,
         status: 'ok',
         durationMs: Date.now() - start,
-        detail: t ? '返回精确 Schema' : '未找到或未开放'
+        detail: t ? 'Exact schema returned' : 'Not found or not allowed'
       });
       return out;
     }
@@ -607,9 +691,9 @@ export class Catalog {
     const ranked = [];
     for (const [s, r] of rows) {
       for (const t of r?.tools || []) {
-        if (!allowed(s, t)) continue;
+        if (!this.isUsable(s, t)) continue;
         const baseRow = this.view(s, t, false);
-        const n = norm(baseRow.tool_id + ' ' + s.label);
+        const n = norm(baseRow.tool_id + ' ' + s.label + ' ' + (t.title || ''));
         const d = norm(baseRow.description + ' ' + s.description);
         let score = terms.length
           ? terms.reduce((a, b) => a + (n.includes(b) ? 8 : d.includes(b) ? 3 : 0), 0) +
@@ -659,7 +743,7 @@ export class Catalog {
         : {})
     };
     this.record({
-      source: 'agent',
+      source: logSource,
       action: 'search_tool',
       target: query || server_id || '*',
       status: 'ok',
@@ -669,19 +753,26 @@ export class Catalog {
     return out;
   }
 
-  async executeTool({ tool_id, arguments: a = {} }, { signal, source = 'agent', requireAllowlist = true } = {}) {
+  async executeTool(
+    { tool_id, arguments: a = {} },
+    { signal, source = 'agent', requireAllowlist = true, profile = null, timeoutMs = 30_000 } = {}
+  ) {
     const start = Date.now();
     const [id, n] = tool_id.split('/');
     const entry = () => this.cfg.get().servers.find((s) => s.id === id);
     const s = entry();
-    if (!s?.enabled || (requireAllowlist && !s.allowlist.includes(n))) {
+    if (!s?.enabled || !profileAllows(profile, id) || (requireAllowlist && !s.allowlist.includes(n))) {
       this.record({
         source,
         action: 'call_tool',
         target: tool_id,
         status: 'blocked',
         durationMs: Date.now() - start,
-        detail: !s?.enabled ? '连接未启用或不存在' : '工具未在白名单中'
+        detail: !profileAllows(profile, id)
+          ? 'Server not allowed for this access profile'
+          : !s?.enabled
+            ? 'Connection disabled or not found'
+            : 'Tool not in allowlist'
       });
       return blocked();
     }
@@ -692,7 +783,7 @@ export class Catalog {
         target: tool_id,
         status: 'error',
         durationMs: Date.now() - start,
-        detail: '并发调用已达上限 (12)'
+        detail: 'Gateway concurrency limit reached (12)'
       });
       return answer('Gateway capacity reached.', true);
     }
@@ -704,6 +795,7 @@ export class Catalog {
       const curr = entry();
       if (
         !curr?.enabled ||
+        !profileAllows(profile, id) ||
         (requireAllowlist && !curr.allowlist.includes(n)) ||
         r.invalid ||
         signal?.aborted ||
@@ -733,6 +825,21 @@ export class Catalog {
         });
         return blocked();
       }
+      if (requireAllowlist && this.cfg.get().settings?.strictSchemaDrift !== false && this.isDrifted(curr, t)) {
+        this.record({
+          source,
+          action: 'call_tool',
+          target: tool_id,
+          status: 'blocked',
+          durationMs: Date.now() - start,
+          detail: 'Schema drift detected; re-approve in workbench',
+          ...(argsPreview ? { argsPreview } : {})
+        });
+        return answer(
+          `Tool "${tool_id}" was blocked because its upstream inputSchema changed since approval. Re-approve it in MCP Shelf Tool Catalog.`,
+          true
+        );
+      }
       let v;
       try {
         v = t.validator ??= t.compile();
@@ -761,7 +868,7 @@ export class Catalog {
         });
         return answer('Could not validate upstream input schema. Call was not forwarded.', true);
       }
-      const result = await r.client.callTool({ name: n, arguments: a }, undefined, { signal, timeout: 30_000 });
+      const result = await r.client.callTool({ name: n, arguments: a }, undefined, { signal, timeout: timeoutMs });
       r.lastUsed = Date.now();
       if (jsz(result) > 512_000) {
         this.record({
@@ -807,8 +914,14 @@ export class Catalog {
     }
   }
 
-  call(params, extra) {
-    return this.executeTool(params, { signal: extra?.signal, source: 'agent', requireAllowlist: true });
+  call(params, extra, profile = null, timeoutMs = 30_000) {
+    return this.executeTool(params, {
+      signal: extra?.signal,
+      source: profile ? `profile:${profile.id}` : 'agent',
+      requireAllowlist: true,
+      profile,
+      timeoutMs
+    });
   }
 
   testCall(params, signal) {

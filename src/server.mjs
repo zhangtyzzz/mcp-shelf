@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import {
   APP_VERSION,
+  BUILTIN_TEMPLATES,
   CLI_PATH,
   DEFAULT_DIR,
   DEFAULT_PORT,
@@ -20,6 +21,7 @@ import {
   openConfig,
   parseImportConfig,
   portFromEnv,
+  profile as parseProfile,
   publicUrlFromEnv,
   rec,
   same,
@@ -29,6 +31,8 @@ import {
   toolId
 } from './config.mjs';
 import { answer, Catalog, checks, createMcp, meta, safeClose } from './catalog.mjs';
+import { OAuthStore } from './oauth.mjs';
+import { TaskManager } from './tasks.mjs';
 
 const security = {
   'Cache-Control': 'no-store',
@@ -36,7 +40,7 @@ const security = {
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
   'Content-Security-Policy':
-    "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 };
 
 async function readBody(req) {
@@ -183,11 +187,27 @@ export async function launch({
   }
 
   const cfg = openConfig(dir);
-  const cat = new Catalog(cfg);
+  const oauthStore = new OAuthStore(dir);
+  const cat = new Catalog(cfg, oauthStore);
+  const tasks = new TaskManager();
   const csrf = token();
   const startedAt = Date.now();
   const auth = isRemote ? createAuth(cfg, adminPassword) : null;
   const publicHost = publicUrl ? new URL(publicUrl).host : '';
+
+  const resolveAccess = (authHeader, expectedProfileId = null) => {
+    const raw = String(authHeader || '');
+    if (!raw.startsWith('Bearer ')) return null;
+    const tok = raw.slice(7);
+    if (!expectedProfileId && same(tok, cfg.get().token)) {
+      return { profile: null };
+    }
+    for (const pr of cfg.get().profiles || []) {
+      if (expectedProfileId && pr.id !== expectedProfileId) continue;
+      if (same(tok, pr.token)) return { profile: pr };
+    }
+    return null;
+  };
 
   if (demo && !cfg.get().servers.some((s) => s.id === 'demo')) {
     cfg.save({ ...cfg.get(), servers: [...cfg.get().servers, demoSource(['echo', 'add'])] });
@@ -243,9 +263,36 @@ export async function launch({
       const route = new URL(req.url, 'http://' + h).pathname;
       const method = req.method;
 
+      // OAuth 2.1 callback endpoint (invoked by browser redirect from upstream auth server)
+      if (method === 'GET' && route === '/api/oauth/callback') {
+        const u = new URL(req.url, 'http://' + h);
+        const code = u.searchParams.get('code');
+        const stParam = u.searchParams.get('state');
+        const errParam = u.searchParams.get('error');
+        const html = (title, msg, ok = true) => {
+          res.writeHead(ok ? 200 : 400, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(
+            `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head>` +
+              `<body style="font:15px/1.6 system-ui;max-width:480px;margin:64px auto;padding:20px">` +
+              `<h2>${title}</h2><p>${msg}</p><p><a href="/">Return to MCP Shelf</a></p></body></html>`
+          );
+        };
+        if (errParam) return html('OAuth Authorization Denied', `Upstream returned error: ${errParam}`, false);
+        if (!code || !stParam) return html('Invalid OAuth Callback', 'Missing code or state parameter.', false);
+        try {
+          const { serverId: sid } = await oauthStore.finishAuth(stParam, code);
+          const srv = cfg.get().servers.find((s) => s.id === sid);
+          if (srv && srv.enabled) void cat.refresh(srv, true);
+          return html('OAuth Connected', `Successfully authorized "${sid}". You can close this tab and return to MCP Shelf.`);
+        } catch (err) {
+          return html('OAuth Failed', err.message || 'Token exchange failed.', false);
+        }
+      }
+
       // Lightweight SSE stream for stdio bridge to receive live tools/list_changed notifications
       if (route === '/mcp-events') {
-        if (!same(req.headers.authorization, 'Bearer ' + cfg.get().token)) {
+        const access = resolveAccess(req.headers.authorization);
+        if (!access) {
           res.setHeader('WWW-Authenticate', 'Bearer');
           return json(401, { error: 'Bearer token required.' });
         }
@@ -277,9 +324,12 @@ export async function launch({
         return;
       }
 
-      // MCP Streamable HTTP endpoint
-      if (route === '/mcp') {
-        if (!same(req.headers.authorization, 'Bearer ' + cfg.get().token)) {
+      // MCP Streamable HTTP endpoint (supports /mcp and profile-scoped /mcp/<profile_id>)
+      const mcpMatch = /^\/mcp(?:\/([a-z][a-z0-9_-]{0,47}))?$/.exec(route);
+      if (mcpMatch) {
+        const expectedProfileId = mcpMatch[1] || null;
+        const access = resolveAccess(req.headers.authorization, expectedProfileId);
+        if (!access) {
           res.setHeader('WWW-Authenticate', 'Bearer');
           return json(401, { error: 'Bearer token required.' });
         }
@@ -287,19 +337,41 @@ export async function launch({
           res.setHeader('Allow', 'POST');
           return json(405, { error: 'Use Streamable HTTP POST.' });
         }
+        const activeProfile = access.profile;
+        const profileId = activeProfile?.id || null;
         const request = await readBody(req);
         const mcp = createMcp(
-          () => ({ tools: cat.metaTools(cfg.get().descriptions) }),
-          async ({ name, arguments: a = {} }, extra) => {
+          () => ({ tools: cat.metaTools(cfg.get().descriptions, activeProfile) }),
+          async (params, extra) => {
+            const { name, arguments: a = {}, task: taskParams } = params;
             const validate = checks.get(name);
             if (!validate?.(a)) {
               throw new McpError(ErrorCode.InvalidParams, 'Unknown meta-tool or invalid arguments.');
             }
-            if (name === 'list_mcps') return answer(await cat.list(a));
-            if (name === 'search_tool') return answer(await cat.search(a));
-            return cat.call(a, extra);
+            if (name === 'list_mcps') return answer(await cat.list(a, activeProfile));
+            if (name === 'search_tool') return answer(await cat.search(a, activeProfile));
+            // Support MCP 2025-11-25 async task-augmented call_tool requests
+            if (taskParams && typeof taskParams === 'object') {
+              const created = tasks.start({
+                toolId: a.tool_id,
+                profileId,
+                ttl: taskParams.ttl,
+                run: (signal) => cat.call(a, { signal }, activeProfile, 300_000)
+              });
+              return { task: created };
+            }
+            return cat.call(a, extra, activeProfile);
           },
-          { instructions: cat.metaInstructions(), listChanged: true }
+          {
+            instructions: cat.metaInstructions(activeProfile),
+            listChanged: true,
+            taskHandlers: {
+              get: (id) => tasks.get(id, profileId),
+              result: (id, signal) => tasks.result(id, profileId, signal),
+              list: () => tasks.list(profileId),
+              cancel: (id) => tasks.cancel(id, profileId)
+            }
+          }
         );
         const tr = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
@@ -393,6 +465,8 @@ export async function launch({
           configFile: cfg.file,
           bridge: { command: process.execPath, args: [CLI_PATH, 'stdio'], env },
           servers: cat.snapshot(),
+          profiles: (cfg.get().profiles || []).map(({ token: _tok, ...rest }) => rest),
+          templates: BUILTIN_TEMPLATES,
           defaults,
           descriptions: cfg.get().descriptions,
           settings: cfg.get().settings,
@@ -401,6 +475,58 @@ export async function launch({
           fingerprint: cat.fingerprint(),
           serverReminder: cat.serverReminder()
         });
+      }
+
+      if (method === 'GET' && route === '/api/tasks') {
+        return json(200, { tasks: tasks.snapshot() });
+      }
+
+      const taskCancelMatch = /^\/api\/tasks\/(task_[0-9a-f]{20})\/cancel$/.exec(route);
+      if (taskCancelMatch && method === 'POST') {
+        try {
+          return json(200, { task: tasks.cancel(taskCancelMatch[1]) });
+        } catch (err) {
+          throw fail(err.message, 404);
+        }
+      }
+
+      // Access Profiles CRUD (multi-machine / multi-project scoped credentials)
+      if (method === 'POST' && route === '/api/profiles') {
+        const next = parseProfile(await readBody(req));
+        const now = cfg.get();
+        if ((now.profiles || []).length >= 30) throw fail('Maximum 30 access profiles allowed.');
+        if ((now.profiles || []).some((pr) => pr.id === next.id)) {
+          throw fail('Profile ID already exists.', 409);
+        }
+        cfg.save({ ...now, profiles: [...(now.profiles || []), next] });
+        return json(201, { ok: true, profile: { ...next, token: undefined }, token: next.token });
+      }
+
+      const profMatch = /^\/api\/profiles\/([a-z][a-z0-9_-]{0,47})(\/(?:token|rotate))?$/.exec(route);
+      if (profMatch) {
+        const [, pid, sub] = profMatch;
+        const now = cfg.get();
+        const existing = (now.profiles || []).find((pr) => pr.id === pid);
+        if (!existing) throw fail('Profile not found.', 404);
+        if (sub === '/token' && method === 'POST') {
+          return json(200, { token: existing.token });
+        }
+        if (sub === '/rotate' && method === 'POST') {
+          const nextTok = token();
+          const updated = { ...existing, token: nextTok };
+          cfg.save({ ...now, profiles: now.profiles.map((pr) => (pr.id === pid ? updated : pr)) });
+          return json(200, { ok: true, token: nextTok });
+        }
+        if (!sub && method === 'PUT') {
+          const data = await readBody(req);
+          const updated = parseProfile({ ...data, id: pid, token: existing.token });
+          cfg.save({ ...now, profiles: now.profiles.map((pr) => (pr.id === pid ? updated : pr)) });
+          return json(200, { ok: true });
+        }
+        if (!sub && method === 'DELETE') {
+          cfg.save({ ...now, profiles: now.profiles.filter((pr) => pr.id !== pid) });
+          return json(200, { ok: true });
+        }
       }
 
       if (method === 'POST' && route === '/api/token') {
@@ -536,29 +662,59 @@ export async function launch({
         return json(201, { ok: true });
       }
 
-      const match = /^\/api\/servers\/([a-z][a-z0-9_-]{0,47})(\/refresh)?$/.exec(route);
+      const match = /^\/api\/servers\/([a-z][a-z0-9_-]{0,47})(\/(?:refresh|oauth\/start|oauth\/logout))?$/.exec(route);
       if (match) {
-        const [, id, refresh] = match;
+        const [, id, action] = match;
         const data = method === 'PUT' ? await readBody(req) : null;
         const now = cfg.get();
         const old = now.servers.find((s) => s.id === id);
-        if (!old) throw fail('找不到连接。', 404);
-        if (refresh && method === 'POST') {
-          if (!old.enabled) throw fail('请先启用连接。', 409);
+        if (!old) throw fail('Connection not found.', 404);
+        if (action === '/refresh' && method === 'POST') {
+          if (!old.enabled) throw fail('Enable connection first.', 409);
           const r = await cat.refresh(old, true);
           if (r.status !== 'ready') throw fail(r.error, 502);
           return json(200, { ok: true });
         }
-        if (!refresh && method === 'DELETE') {
+        if (action === '/oauth/start' && method === 'POST') {
+          if (old.transport !== 'http' || old.authMode !== 'oauth') {
+            throw fail('Connection is not configured for OAuth.', 400);
+          }
+          const callbackBase = publicUrl || `${isHttpsReq(req) ? 'https' : 'http'}://${h}`;
+          const result = await oauthStore.startAuth(old, callbackBase + '/api/oauth/callback');
+          if (result.status === 'authorized' && old.enabled) void cat.refresh(old, true);
+          return json(200, result);
+        }
+        if (action === '/oauth/logout' && method === 'POST') {
+          oauthStore.clear(id);
+          cat.invalidate(id);
+          return json(200, { ok: true });
+        }
+        if (!action && method === 'DELETE') {
           cfg.save({ ...now, servers: now.servers.filter((s) => s.id !== id) });
+          oauthStore.clear(id);
           cat.invalidate(id);
           cat.notifyIfChanged();
           return json(200, { ok: true });
         }
-        if (!refresh && method === 'PUT') {
+        if (!action && method === 'PUT') {
           let next = source({ ...data, id });
           const changed = signature(next) !== signature(old);
-          if (changed) next = { ...next, allowlist: [], overrides: Object.create(null) };
+          if (changed) {
+            next = { ...next, allowlist: [], approvedHashes: Object.create(null), overrides: Object.create(null) };
+          } else {
+            // Auto-lock schemaHash for newly approved or explicitly re-approved tools
+            const hashes = Object.assign(Object.create(null), old.approvedHashes || {}, next.approvedHashes || {});
+            for (const toolNameStr of next.allowlist) {
+              const curHash = cat.currentHash(id, toolNameStr);
+              if (curHash && (!hashes[toolNameStr] || data?.reapproveTool === toolNameStr)) {
+                hashes[toolNameStr] = curHash;
+              }
+            }
+            for (const k of Object.keys(hashes)) {
+              if (!next.allowlist.includes(k)) delete hashes[k];
+            }
+            next = { ...next, approvedHashes: hashes };
+          }
           cfg.save({ ...now, servers: now.servers.map((s) => (s.id === id ? next : s)) });
           if (changed || old.enabled !== next.enabled) cat.invalidate(id);
           cat.notifyIfChanged();
@@ -601,6 +757,7 @@ export async function launch({
     close: async () => {
       const p = new Promise((r) => server.close(r));
       server.closeAllConnections();
+      tasks.close();
       await cat.close();
       await p;
     }

@@ -5,7 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.6.0';
+export const APP_VERSION = '0.7.0';
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));
 export const DEFAULT_DIR = () => path.join(os.homedir(), '.config', APP_NAME);
@@ -94,7 +94,8 @@ export const defaults = {
 export const defaultSettings = {
   logLimit: 200,
   logDetails: false,
-  idleMinutes: 10
+  idleMinutes: 10,
+  strictSchemaDrift: true
 };
 
 export function normalizeSettings(v) {
@@ -109,7 +110,9 @@ export function normalizeSettings(v) {
     throw fail('idleMinutes must be an integer between 0 and 1440.');
   }
   const logDetails = v.logDetails === undefined ? defaultSettings.logDetails : Boolean(v.logDetails);
-  return { logLimit, logDetails, idleMinutes };
+  const strictSchemaDrift =
+    v.strictSchemaDrift === undefined ? defaultSettings.strictSchemaDrift : Boolean(v.strictSchemaDrift);
+  return { logLimit, logDetails, idleMinutes, strictSchemaDrift };
 }
 
 export function descriptions(v) {
@@ -133,13 +136,30 @@ export function source(v) {
     const d = limited(val, k, 2400);
     if (d) overrides[k] = d;
   }
+  const approvedHashes = Object.create(null);
+  const rawHashes = v.approvedHashes ?? {};
+  if (!rec(rawHashes) || Object.keys(rawHashes).length > 500) {
+    throw fail('Invalid approvedHashes map.');
+  }
+  for (const [k, val] of Object.entries(rawHashes)) {
+    if (!toolName.test(k)) throw fail('Invalid tool name in approvedHashes.');
+    if (typeof val === 'string' && /^[0-9a-f]{12}$/.test(val)) {
+      approvedHashes[k] = val;
+    }
+  }
+  const allowlist = [...new Set(array(v.allowlist, (x) => toolName.test(x), '白名单', 500))];
+  // Keep approvedHashes pruned to tools currently in allowlist
+  for (const k of Object.keys(approvedHashes)) {
+    if (!allowlist.includes(k)) delete approvedHashes[k];
+  }
   const common = {
     id: v.id,
     label: limited(v.label, '显示名', 100) || v.id,
     description: limited(v.description, '描述', 1000),
     transport: v.transport,
     enabled: v.enabled === true,
-    allowlist: [...new Set(array(v.allowlist, (x) => toolName.test(x), '白名单', 500))],
+    allowlist,
+    approvedHashes,
     overrides
   };
   if (v.transport === 'stdio') {
@@ -175,11 +195,95 @@ export function source(v) {
   if (bearerEnv && !envName.test(bearerEnv)) {
     throw fail('无效的 Bearer 环境变量名。');
   }
-  return { ...common, url: u.href, bearerEnv };
+  const rawMode = v.authMode;
+  const authMode =
+    rawMode === 'oauth'
+      ? 'oauth'
+      : rawMode === 'bearer' || (!rawMode && bearerEnv)
+        ? 'bearer'
+        : 'none';
+  return { ...common, url: u.href, authMode, bearerEnv: authMode === 'bearer' ? bearerEnv : '' };
 }
 
 export const signature = (s) =>
-  JSON.stringify([s.transport, s.command, s.cwd, s.args, s.envKeys, s.url, s.bearerEnv]);
+  JSON.stringify([s.transport, s.command, s.cwd, s.args, s.envKeys, s.url, s.authMode, s.bearerEnv]);
+
+export function profile(v) {
+  if (!rec(v) || typeof v.id !== 'string' || !serverId.test(v.id)) {
+    throw fail('Profile ID must start with a lowercase letter and contain only a-z, 0-9, -, _.');
+  }
+  const tok = typeof v.token === 'string' && /^[0-9a-f]{64}$/.test(v.token) ? v.token : token();
+  return {
+    id: v.id,
+    label: limited(v.label, 'Profile label', 100) || v.id,
+    description: limited(v.description, 'Profile description', 400),
+    token: tok,
+    servers: [...new Set(array(v.servers, (x) => serverId.test(x), 'Profile servers', 40))]
+  };
+}
+
+export const BUILTIN_TEMPLATES = [
+  {
+    id: 'exa',
+    label: 'Exa Search (Free)',
+    description: 'Free hosted Exa web search & code context MCP (no API key required).',
+    transport: 'http',
+    url: 'https://mcp.exa.ai/mcp',
+    authMode: 'none',
+    bearerEnv: '',
+    enabled: true
+  },
+  {
+    id: 'context7',
+    label: 'Context7 Docs',
+    description: 'Up-to-date documentation and code examples for libraries and frameworks.',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@upstash/context7-mcp'],
+    envKeys: [],
+    enabled: true
+  },
+  {
+    id: 'sequential-thinking',
+    label: 'Sequential Thinking',
+    description: 'Dynamic structured reasoning and step-by-step problem breakdown.',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-sequential-thinking'],
+    envKeys: [],
+    enabled: true
+  },
+  {
+    id: 'filesystem',
+    label: 'Local Filesystem',
+    description: 'Read and inspect files inside an allowed local directory (edit path before saving).',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/workspace'],
+    envKeys: [],
+    enabled: true
+  },
+  {
+    id: 'playwright',
+    label: 'Playwright Browser',
+    description: 'Headless/headed browser automation and webpage inspection via Playwright.',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@playwright/mcp@latest'],
+    envKeys: [],
+    enabled: true
+  },
+  {
+    id: 'github',
+    label: 'GitHub (Remote OAuth)',
+    description: 'Official remote GitHub MCP server using OAuth 2.1 browser sign-in.',
+    transport: 'http',
+    url: 'https://api.githubcopilot.com/mcp/',
+    authMode: 'oauth',
+    bearerEnv: '',
+    enabled: true
+  }
+];
 
 export const demoSource = (allowlist) =>
   source({
@@ -200,7 +304,14 @@ export function openConfig(dir) {
     fs.writeFileSync(
       file,
       JSON.stringify(
-        { version: 1, token: token(), descriptions: defaults, settings: defaultSettings, servers: [] },
+        {
+          version: 1,
+          token: token(),
+          descriptions: defaults,
+          settings: defaultSettings,
+          profiles: [],
+          servers: []
+        },
         null,
         2
       ) + '\n',
@@ -219,14 +330,22 @@ export function openConfig(dir) {
   ) {
     throw new Error('Invalid gateway config.');
   }
+  const rawProfiles = raw.profiles === undefined ? [] : raw.profiles;
+  if (!Array.isArray(rawProfiles) || rawProfiles.length > 30) {
+    throw new Error('Invalid profiles in gateway config.');
+  }
   let cfg = {
     ...raw,
     descriptions: descriptions(raw.descriptions),
     settings: normalizeSettings(raw.settings),
+    profiles: rawProfiles.map(profile),
     servers: raw.servers.map(source)
   };
   if (new Set(cfg.servers.map((s) => s.id)).size !== cfg.servers.length) {
     throw new Error('Duplicate connection IDs.');
+  }
+  if (new Set(cfg.profiles.map((p) => p.id)).size !== cfg.profiles.length) {
+    throw new Error('Duplicate profile IDs.');
   }
   return {
     file,

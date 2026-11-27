@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-11-27
+
+### Added
+- **Upstream OAuth 2.1 + PKCE Support** (`src/oauth.mjs`): Full `OAuthClientProvider` implementation with `0600` per-server token persistence, browser authorization redirect & `/api/oauth/callback` handling, and one-click Sign In / Sign Out controls in Connections.
+- **MCP 2025-11-25 Async Tasks & Metadata** (`src/tasks.mjs`): Native `tasks/get`, `tasks/result`, `tasks/list`, `tasks/cancel` handlers for task-augmented `call_tool` calls (up to 5-minute background execution with cancellation), plus sanitized upstream `title` & `icons` rendering.
+- **Access Profiles (Multi-Machine / Multi-VPS / Multi-Project Scopes)**: Create dedicated scoped Bearer tokens (`/mcp` or `/mcp/<profile_id>`) that only activate selected upstream MCP connections, with full UI management in Connect Agents.
+- **Schema Drift Lock**: Auto-locks `schemaHash` upon tool approval; detects upstream parameter drift, flags tools with `Schema Changed` + one-click `Re-approve`, and blocks drifted invocations when strict drift lock is enabled.
+- **Curated Classic MCP Templates**: Built-in one-click templates in Connections including **Exa Search (Free Hosted)**, **Context7 Docs**, **Sequential Thinking**, **Local Filesystem**, **Playwright Browser**, and **GitHub (Remote OAuth)**.
+
 ## [0.6.0] - 2026-11-27
 
 ### Added
