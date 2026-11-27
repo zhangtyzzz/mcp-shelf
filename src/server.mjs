@@ -297,7 +297,6 @@ export async function launch({
       },
       {
         instructions: cat.metaInstructions(activeProfile),
-        listChanged: true,
         taskHandlers: {
           get: (id) => tasks.get(id, profileId),
           result: (id, signal) => tasks.result(id, profileId, signal),

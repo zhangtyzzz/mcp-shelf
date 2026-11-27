@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - **Configuration import**: Accept Antigravity's `serverUrl` and preserve multiline arrays and quoted values in Codex TOML. Report invalid connection fields before saving those entries.
 - **Access profiles**: Choose all enabled connections or an explicit selection. An empty selection grants no access. The migration preserves legacy access and tokens.
 - **Stable images**: Publish `stable` and `latest` from formal version tags only after same-commit CI passes.
+- **MCP capability discovery**: Advertise tool-list change notifications on the stdio bridge, where they are delivered.
 
 ### Changed
 

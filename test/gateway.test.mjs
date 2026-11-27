@@ -40,6 +40,7 @@ async function fixture(t){
 test('SDK via real HTTP gateway, discover exact schema and call namespaced stdio upstream', async t=>{
  const f=await fixture(t), c=await f.bridge();
  assert.deepEqual((await c.listTools()).tools.map(t=>t.name),['list_mcps','search_tool','call_tool']);
+ assert.equal(c.getServerCapabilities().tools.listChanged,undefined);
  assert.equal((await data(c,'list_mcps')).total,0);
  const s=demoSource([]);await f.api('servers','POST',s,201);await f.api('servers/demo/refresh','POST');
  assert.equal((await f.get()).servers[0].tools.length,2);
@@ -141,6 +142,7 @@ test('real stdio subprocess bridge and restart persistence', async t=>{
  const f=await fixture(t);
  await f.api('servers','POST',demoSource(['add']),201);
  let c=await f.bridge(true);
+ assert.equal(c.getServerCapabilities().tools.listChanged,true);
  await f.api('descriptions','PUT',{search_tool:'自定义搜索'});
  assert.ok((await c.listTools()).tools[1].description.startsWith('自定义搜索'));
  assert.match((await c.listTools()).tools[1].description,/Connected MCP servers:\n- demo \(1 tool\):/);
