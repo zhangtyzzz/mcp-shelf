@@ -78,7 +78,7 @@ MCP_SHELF_PORT=8788 MCP_SHELF_HOME=~/.config/mcp-shelf-alt npm start
 ### 方式 C：Docker 远程自部署（跨设备访问 + Caddy / NPM 反代）
 
 GitHub Actions 自动构建并推送多架构（`linux/amd64`, `linux/arm64`）镜像至 GHCR：
-- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — 稳定版镜像（`stable` 分支与 `vX.Y.Z` Tag）
+- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — 稳定版镜像（`master` 分支与 `vX.Y.Z` Tag）
 - `ghcr.io/zhangtyzzz/mcp-shelf:alpha` — 尝鲜版镜像（`alpha` 分支）
 
 适合部署到你自己的 VPS / 服务器，前置于 Caddy、Nginx Proxy Manager 或 Cloudflare Tunnel 提供 HTTPS；部署后任意电脑的 Grok / Claude / Codex / Antigravity 都可以直连你的统一 MCP 网关：

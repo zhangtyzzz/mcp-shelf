@@ -3,16 +3,14 @@ name: Docker
 on:
   push:
     branches:
-      - alpha
-      - stable
       - master
+      - alpha
     tags:
       - 'v*.*.*'
   pull_request:
     branches:
-      - alpha
-      - stable
       - master
+      - alpha
 
 permissions:
   contents: read
@@ -49,12 +47,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=stable-,enable=${{ github.ref == 'refs/heads/master' }}
             type=raw,value=alpha,enable=${{ github.ref == 'refs/heads/alpha' }}
             type=sha,prefix=alpha-,enable=${{ github.ref == 'refs/heads/alpha' }}
-            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/stable' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/stable' }}
-            type=sha,prefix=stable-,enable=${{ github.ref == 'refs/heads/stable' }}
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/master' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}

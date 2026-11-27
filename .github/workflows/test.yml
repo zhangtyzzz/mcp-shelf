@@ -3,16 +3,14 @@ name: Test
 on:
   push:
     branches:
-      - alpha
-      - stable
       - master
+      - alpha
     tags:
       - 'v*.*.*'
   pull_request:
     branches:
-      - alpha
-      - stable
       - master
+      - alpha
 
 permissions:
   contents: read

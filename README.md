@@ -80,7 +80,7 @@ MCP_SHELF_PORT=8788 MCP_SHELF_HOME=~/.config/mcp-shelf-alt npm start
 ### Option C: Self-Hosted Docker Deployment (`MCP_SHELF_MODE=remote`)
 
 Prebuilt multi-arch (`linux/amd64`, `linux/arm64`) images are automatically published to GHCR:
-- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — stable releases (`stable` branch & `vX.Y.Z` tags)
+- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — stable releases (`master` branch & `vX.Y.Z` tags)
 - `ghcr.io/zhangtyzzz/mcp-shelf:alpha` — preview builds (`alpha` branch)
 
 Deploy MCP Shelf on your VPS behind **Caddy**, **Nginx Proxy Manager**, or **Cloudflare Tunnel** so all your devices share one authenticated MCP gateway:
