@@ -777,7 +777,6 @@ export async function launch({
         const next = normalizeSettings({ ...cfg.get().settings, ...(await readBody(req)) });
         cfg.save({ ...cfg.get(), settings: next });
         cat.applySettings();
-        cat.notifyIfChanged();
         return json(200, { ok: true, settings: next });
       }
 

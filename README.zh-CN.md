@@ -29,7 +29,7 @@ MCP Shelf 是一个轻量、零构建的本机 MCP 网关与可视化工作台�
 | `search_tool` | 关键词或精确 `tool_id` 检索已开放工具；**默认直接附带完整 `inputSchema` / `outputSchema`**（传 `include_schema: false` 可切回精简列表），支持中英文模糊匹配。 |
 | `call_tool` | 用 `连接ID/工具名` 与 JSON 参数调用已开放工具，经本机 JSON Schema 校验后转发，完整保留上游结构化内容与错误标记。 |
 
-支持通知的 Streamable HTTP 客户端可在原地址用 `GET /mcp`（或 `GET /mcp/<权限组>`）打开经过鉴权的 SSE 流，接收 `notifications/tools/list_changed`。stdio 桥接也会转发该通知。每次 `tools/list` 返回最新的元工具描述，单个上游工具的描述在下次 `search_tool` 时读取。缓存工具定义且没有监听通知的客户端可能需要重连。
+支持通知的 Streamable HTTP 客户端可在原地址用 `GET /mcp`（或 `GET /mcp/<权限组>`）打开经过鉴权的 SSE 流，接收 `notifications/tools/list_changed`。stdio 桥接也会转发该通知。每次 `tools/list` 返回最新的元工具描述，单个上游工具的描述在下次 `search_tool` 时读取。缓存工具定义且没有监听通知的客户端可能需要重连。提供给模型的连接摘要只使用已保存的连接与批准名单，上游探测和健康状态不会改写这部分提示词。实际可用工具以 `list_mcps` 和 `search_tool` 的结果为准。
 
 ## 快速开始
 

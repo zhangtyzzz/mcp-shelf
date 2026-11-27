@@ -85,8 +85,8 @@ test('SDK via real HTTP gateway, discover exact schema and call namespaced stdio
 
 test('Streamable HTTP sends authenticated tool-list notifications only to affected profiles', {timeout: 5_000}, async t => {
  const f = await fixture(t);
- const demo = demoSource(['echo']);
- const other = {...demo, id: 'other'};
+ const demo = demoSource(['echo', 'missing']);
+ const other = {...demoSource(['echo']), id: 'other'};
  await f.api('servers', 'POST', demo, 201);
  await f.api('servers', 'POST', other, 201);
  const selected = await f.api('profiles', 'POST', {id: 'only-demo', scope: 'selected', servers: ['demo']}, 201);
@@ -125,6 +125,12 @@ test('Streamable HTTP sends authenticated tool-list notifications only to affect
 
  const master = await subscribe('/mcp', f.app.config.get().token);
  const scoped = await subscribe(path, selected.token);
+ const beforeDiscovery = await scoped.client.listTools();
+ const upstreamTools = await data(scoped.client, 'list_mcps');
+ assert.deepEqual(upstreamTools.servers[0].tools, ['demo/echo']);
+ assert.equal(upstreamTools.servers[0].tool_count, 1);
+ assert.match(beforeDiscovery.tools[0].description, /- demo \(2 tools\)/);
+ assert.deepEqual(await scoped.client.listTools(), beforeDiscovery);
  const masterChanged = master.next();
  await f.api('servers/other', 'PUT', {...other, description: 'Hidden connection changed'});
  await masterChanged;
@@ -138,7 +144,7 @@ test('Streamable HTTP sends authenticated tool-list notifications only to affect
  assert.doesNotMatch((await scoped.client.listTools()).tools[0].description, /Hidden connection changed/);
 
  const newApproval = scoped.next();
- await f.api('servers/demo', 'PUT', {...demo, allowlist: ['add']});
+ await f.api('servers/demo', 'PUT', {...demo, allowlist: ['add', 'missing']});
  await newApproval;
  assert.deepEqual((await data(scoped.client, 'list_mcps')).servers[0].tools, ['demo/add']);
 

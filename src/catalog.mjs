@@ -252,19 +252,11 @@ export class Catalog {
           id: s.id,
           label: s.label,
           description: s.description,
-          allowlist: [...s.allowlist].sort(),
-          toolCount: this.availableToolCount(s)
+          allowlist: [...s.allowlist].sort()
         }))
         .sort((a, b) => a.id.localeCompare(b.id, 'en'))
     };
     return createHash('sha256').update(JSON.stringify(summary)).digest('hex').slice(0, 12);
-  }
-
-  availableToolCount(server) {
-    const state = this.states.get(server.id);
-    return state?.status === 'ready'
-      ? state.tools.filter((tool) => this.isUsable(server, tool)).length
-      : server.allowlist.length;
   }
 
   notifyIfChanged() {
@@ -280,8 +272,8 @@ export class Catalog {
   }
 
   /**
-   * Compact Grok-Build-style server summary listing enabled servers that have approved tools,
-   * bounded by a strict character budget so large server counts never blow up tool descriptions.
+   * Summarize configured approvals within the character budget.
+   * Discovery and upstream health stay out of cache-sensitive tool descriptions.
    */
   serverReminder(maxChars = 1400, profile = null) {
     const active = this.cfg
@@ -290,7 +282,7 @@ export class Catalog {
     if (!active.length) return '';
 
     const entries = active.map((s) => {
-      const count = this.availableToolCount(s);
+      const count = s.allowlist.length;
       const word = count === 1 ? 'tool' : 'tools';
       const desc = cleanMsg(s.description || (s.label !== s.id ? s.label : ''), 120);
       return {
@@ -556,7 +548,6 @@ export class Catalog {
       await safeClose(c);
     } finally {
       r.at = Date.now();
-      if (!r.invalid) this.notifyIfChanged();
     }
     return r;
   }
