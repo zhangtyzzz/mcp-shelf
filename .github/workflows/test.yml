@@ -1,16 +1,7 @@
 name: Test
 
 on:
-  push:
-    branches:
-      - master
-      - alpha
-    tags:
-      - 'v*.*.*'
-  pull_request:
-    branches:
-      - master
-      - alpha
+  workflow_call:
 
 permissions:
   contents: read

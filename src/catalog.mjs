@@ -151,7 +151,7 @@ function missingEnvKeysFor(s) {
 }
 
 const profileAllows = (profile, sid) =>
-  !profile || !Array.isArray(profile.servers) || profile.servers.length === 0 || profile.servers.includes(sid);
+  !profile || profile.scope === 'all' || (profile.scope === 'selected' && profile.servers.includes(sid));
 
 const SENSITIVE_KEY = /token|secret|password|passwd|api[_-]?key|authorization|cookie|credential/i;
 const SEARCH_SCHEMA_BUDGET = 16_384;
@@ -760,15 +760,21 @@ export class Catalog {
     const start = Date.now();
     const [id, n] = tool_id.split('/');
     const entry = () => this.cfg.get().servers.find((s) => s.id === id);
+    const profileStillAllows = () => {
+      if (!profile) return true;
+      const current = this.cfg.get().profiles.find((pr) => pr.id === profile.id && pr.token === profile.token);
+      return current !== undefined && profileAllows(current, id);
+    };
     const s = entry();
-    if (!s?.enabled || !profileAllows(profile, id) || (requireAllowlist && !s.allowlist.includes(n))) {
+    const allowed = profileStillAllows();
+    if (!s?.enabled || !allowed || (requireAllowlist && !s.allowlist.includes(n))) {
       this.record({
         source,
         action: 'call_tool',
         target: tool_id,
         status: 'blocked',
         durationMs: Date.now() - start,
-        detail: !profileAllows(profile, id)
+        detail: !allowed
           ? 'Server not allowed for this access profile'
           : !s?.enabled
             ? 'Connection disabled or not found'
@@ -795,7 +801,7 @@ export class Catalog {
       const curr = entry();
       if (
         !curr?.enabled ||
-        !profileAllows(profile, id) ||
+        !profileStillAllows() ||
         (requireAllowlist && !curr.allowlist.includes(n)) ||
         r.invalid ||
         signal?.aborted ||

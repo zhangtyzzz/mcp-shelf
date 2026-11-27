@@ -16,9 +16,6 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import {
   APP_VERSION,
   BUILTIN_TEMPLATES,
-  CLI_PATH,
-  DEFAULT_DIR,
-  DEFAULT_PORT,
   adminPasswordFromEnv,
   defaults,
   demoSource,
@@ -595,9 +592,6 @@ export async function launch({
       }
 
       if (method === 'GET' && route === '/api/state') {
-        const env = {};
-        if (dir !== DEFAULT_DIR()) env.MCP_SHELF_HOME = dir;
-        if (p !== DEFAULT_PORT) env.MCP_SHELF_PORT = String(p);
         const remoteEndpoint = publicUrl
           ? publicUrl + '/mcp'
           : (isHttpsReq(req) ? 'https://' : 'http://') + h + '/mcp';
@@ -608,8 +602,6 @@ export async function launch({
           publicUrl: publicUrl || '',
           remoteEndpoint,
           demo,
-          configFile: cfg.file,
-          bridge: { command: process.execPath, args: [CLI_PATH, 'stdio'], env },
           servers: cat.snapshot(),
           profiles: (cfg.get().profiles || []).map(({ token: _tok, ...rest }) => rest),
           templates: BUILTIN_TEMPLATES,
@@ -638,7 +630,9 @@ export async function launch({
 
       // Access Profiles CRUD (multi-machine / multi-project scoped credentials)
       if (method === 'POST' && route === '/api/profiles') {
-        const next = parseProfile(await readBody(req));
+        const data = await readBody(req);
+        if (!rec(data)) throw fail('Invalid profile payload.');
+        const next = parseProfile({ ...data, scope: data.scope === undefined ? 'selected' : data.scope });
         const now = cfg.get();
         if ((now.profiles || []).length >= 30) throw fail('Maximum 30 access profiles allowed.');
         if ((now.profiles || []).some((pr) => pr.id === next.id)) {
@@ -651,6 +645,8 @@ export async function launch({
       const profMatch = /^\/api\/profiles\/([a-z][a-z0-9_-]{0,47})(\/(?:token|rotate))?$/.exec(route);
       if (profMatch) {
         const [, pid, sub] = profMatch;
+        const editing = !sub && method === 'PUT';
+        const data = editing ? await readBody(req) : undefined;
         const now = cfg.get();
         const existing = (now.profiles || []).find((pr) => pr.id === pid);
         if (!existing) throw fail('Profile not found.', 404);
@@ -664,9 +660,12 @@ export async function launch({
           oauthServer.revokeByProfile(pid);
           return json(200, { ok: true, token: nextTok });
         }
-        if (!sub && method === 'PUT') {
-          const data = await readBody(req);
-          const updated = parseProfile({ ...data, id: pid, token: existing.token });
+        if (editing) {
+          if (!rec(data)) throw fail('Invalid profile payload.');
+          const scope = data.scope === undefined
+            ? (Object.hasOwn(data, 'servers') ? 'selected' : existing.scope)
+            : data.scope;
+          const updated = parseProfile({ ...existing, ...data, scope, id: pid, token: existing.token });
           cfg.save({ ...now, profiles: now.profiles.map((pr) => (pr.id === pid ? updated : pr)) });
           return json(200, { ok: true });
         }
@@ -775,6 +774,7 @@ export async function launch({
         }
         return json(201, {
           ok: true,
+          format: parsed.format,
           imported: toAdd.map((s) => s.id),
           skipped
         });

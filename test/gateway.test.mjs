@@ -13,6 +13,7 @@ import {
  ListTasksResultSchema
 } from '@modelcontextprotocol/sdk/types.js';
 import {launch,createMcp,httpClient,demoSource} from '../src/main.mjs';
+import {defaults,openConfig} from '../src/config.mjs';
 const cli=fileURLToPath(new URL('../src/main.mjs',import.meta.url));
 const call=(c,name,arguments_={})=>c.callTool({name,arguments:arguments_});
 const data=async(...args)=>(await call(...args)).structuredContent;
@@ -52,6 +53,7 @@ test('SDK via real HTTP gateway, discover exact schema and call namespaced stdio
  // search_tool returns full inputSchema by default (1-step discovery); include_schema=false returns compact view
  const found=await data(c,'search_tool',{query:'回声'});
  assert.equal(found.matches[0].tool_id,'demo/echo');
+ assert.equal(found.matches[0].description,'自定义回声');
  assert.deepEqual(found.matches[0].inputSchema.required,['text']);
  const compact=await data(c,'search_tool',{query:'回声',include_schema:false});
  assert.equal(compact.matches[0].inputSchema,undefined);
@@ -60,6 +62,15 @@ test('SDK via real HTTP gateway, discover exact schema and call namespaced stdio
  assert.match((await call(c,'call_tool',{tool_id:'demo/echo',arguments:{text:5}})).content[0].text,/Arguments do not match/);
  assert.deepEqual(await data(c,'call_tool',{tool_id:'demo/echo',arguments:{text:'你好 MCP'}}),{echo:'你好 MCP'});
  assert.equal((await call(c,'call_tool',{tool_id:'demo/add',arguments:{a:1,b:2}})).isError,true);
+ await f.api('descriptions','PUT',{search_tool:'Fresh discovery description'});
+ await f.api('servers/demo','PUT',{...s,allowlist:['echo'],overrides:{echo:'Fresh echo description'}});
+ const reconnected=await f.bridge();
+ for(const client of [c,reconnected]){
+  const tools=(await client.listTools()).tools;
+  assert.match(tools.find(t=>t.name==='search_tool').description,/^Fresh discovery description/);
+  const result=await data(client,'search_tool',{tool_id:'demo/echo'});
+  assert.equal(result.matches[0].description,'Fresh echo description');
+ }
  await f.api('servers','POST',{...s,id:'other',allowlist:['echo']},201);
  const page=await data(c,'search_tool',{query:'echo',limit:1});assert.equal(page.total,2);assert.equal(page.next_offset,1);
  assert.notEqual(page.matches[0].tool_id,(await data(c,'search_tool',{query:'echo',limit:1,offset:1})).matches[0].tool_id);
@@ -69,6 +80,63 @@ test('SDK via real HTTP gateway, discover exact schema and call namespaced stdio
  await f.api('servers/other','PUT',{...s,id:'other',enabled:false,allowlist:['echo']});
  assert.equal((await call(c,'call_tool',{tool_id:'other/echo',arguments:{text:'no'}})).isError,true);
 });
+
+test('profile scopes migrate with existing tokens and empty selections stay closed', async t => {
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelf-profile-migration-'));
+ t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+ const configPath = path.join(dir, 'config.json');
+ const legacy = {
+  version: 1,
+  token: 'a'.repeat(64),
+  descriptions: defaults,
+  profiles: [
+   {id: 'legacy-all', token: 'b'.repeat(64), servers: []},
+   {id: 'legacy-one', token: 'c'.repeat(64), servers: ['demo']}
+  ],
+  servers: [demoSource(['echo']), {...demoSource(['echo']), id: 'other'}]
+ };
+ const original = JSON.stringify(legacy);
+ fs.writeFileSync(configPath, original, {mode: 0o600});
+ const app = await launch({dir, port: 0});
+ t.after(() => app.close());
+ const backup = path.join(dir, 'config.v1.json');
+ assert.equal(fs.readFileSync(backup, 'utf8'), original);
+ if (process.platform !== 'win32') assert.equal(fs.statSync(backup).mode & 0o777, 0o600);
+ assert.equal(app.config.get().version, 2);
+ assert.equal(app.config.get().token, legacy.token);
+ assert.deepEqual(app.config.get().profiles.map(p => [p.scope, p.token]), [
+  ['all', legacy.profiles[0].token], ['selected', legacy.profiles[1].token]
+ ]);
+ async function connect(profile) {
+  const client = new Client({name: 'profile-regression', version: '1'});
+  t.after(() => client.close());
+  await client.connect(httpClient(app.url + '/mcp/' + profile.id, {Authorization: 'Bearer ' + profile.token}));
+  return client;
+ }
+ const all = await connect(legacy.profiles[0]);
+ assert.deepEqual((await data(all, 'list_mcps')).servers.map(s => s.id), ['demo', 'other']);
+ const one = await connect(legacy.profiles[1]);
+ assert.deepEqual((await data(one, 'list_mcps')).servers.map(s => s.id), ['demo']);
+ const csrf = (await (await fetch(app.url + '/api/state')).json()).csrf;
+ const edit = async payload => assert.equal((await fetch(app.url + '/api/profiles/legacy-one', {
+  method: 'PUT',
+  headers: {'Content-Type': 'application/json', 'X-Shelf-CSRF': csrf},
+  body: JSON.stringify(payload)
+ })).status, 200);
+ await edit({servers: []});
+ await edit({label: 'Disabled access'});
+ assert.equal((await data(one, 'list_mcps')).total, 0);
+ assert.equal((await data(one, 'search_tool', {tool_id: 'demo/echo'})).total, 0);
+ assert.equal((await call(one, 'call_tool', {tool_id: 'demo/echo', arguments: {text: 'blocked'}})).isError, true);
+ assert.doesNotMatch((await one.listTools()).tools[1].description, /- demo \(/);
+ const reconnected = await connect(legacy.profiles[1]);
+ assert.doesNotMatch(reconnected.getInstructions() || '', /- demo \(/);
+ const reopened = openConfig(dir);
+ assert.deepEqual(reopened.get().profiles[1].servers, []);
+ assert.equal(reopened.get().profiles[1].scope, 'selected');
+ assert.equal(fs.readFileSync(backup, 'utf8'), original);
+});
+
 test('real stdio subprocess bridge and restart persistence', async t=>{
  const f=await fixture(t);
  await f.api('servers','POST',demoSource(['add']),201);
@@ -158,6 +226,17 @@ test('config import (JSON and Codex TOML), refresh-all, tool playground, activit
 
  // 2. Import Codex TOML format
  const tomlText = [
+  'model = "example"',
+  '[mcp_servers."example.local"]',
+  'command = "npx"',
+  'args = [',
+  '  "-y", # trailing comment',
+  "  'prefix # literal',",
+  '  "@example/mcp",',
+  ']',
+  'enabled = false',
+  '[mcp_servers."example.local".env]',
+  'EXAMPLE_API_KEY = "fixture-secret # not a comment"',
   '[mcp_servers.codex_remote]',
   'url = "https://example.com/mcp"',
   'bearer_token_env_var = "REMOTE_API_KEY"',
@@ -165,7 +244,30 @@ test('config import (JSON and Codex TOML), refresh-all, tool playground, activit
   ''
  ].join('\n');
  const impToml = await f.api('import', 'POST', { text: tomlText }, 201);
- assert.deepEqual(impToml.imported, ['codex_remote']);
+ assert.deepEqual(impToml.imported, ['example-local', 'codex_remote']);
+ const local = f.app.config.get().servers.find(s => s.id === 'example-local');
+ assert.deepEqual(local.args, ['-y', 'prefix # literal', '@example/mcp']);
+ assert.deepEqual(local.envKeys, ['EXAMPLE_API_KEY']);
+ assert.equal(fs.readFileSync(f.app.config.file, 'utf8').includes('fixture-secret'), false);
+
+ const antigravity = JSON.stringify({mcpServers: {
+  'agy-remote': {serverUrl: 'https://example.com/mcp', headers: {Authorization: 'Bearer fixture-secret'}, enabled: false},
+  'broken-args': {command: 'npx', args: ['valid', 42]},
+  'broken-cwd': {command: 'npx', cwd: 42},
+  'broken-url': {serverUrl: 42}
+ }});
+ const agyPreview = await f.api('import/preview', 'POST', {text: antigravity});
+ assert.equal(agyPreview.items[0].server.url, 'https://example.com/mcp');
+ assert.equal(agyPreview.items[0].warnings.length, 1);
+ assert.equal(JSON.stringify(agyPreview).includes('fixture-secret'), false);
+ assert.deepEqual(agyPreview.skipped.map(({id}) => id), ['broken-args', 'broken-cwd', 'broken-url']);
+ const agyImport = await f.api('import', 'POST', {text: antigravity}, 201);
+ assert.deepEqual(agyImport.imported, ['agy-remote']);
+ const malformed = '[mcp_servers.invalid]\ncommand = "npx"\nargs = ["fixture-secret"';
+ const parseError = await f.api('import', 'POST', {text: malformed}, 400);
+ assert.match(parseError.error, /TOML/);
+ assert.equal(parseError.error.includes('fixture-secret'), false);
+ assert.equal(f.app.config.get().servers.some(s => s.id === 'invalid'), false);
 
  // 3. Refresh all enabled connections
  const refreshed = await f.api('servers/refresh-all', 'POST');

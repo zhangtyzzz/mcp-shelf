@@ -31,7 +31,7 @@ MCP Shelf is a lightweight, zero-build Model Context Protocol (MCP) gateway and 
 | `search_tool` | Searches approved upstream tools by keyword or exact `tool_id` (with CJK bigram fallback). Returns full `inputSchema` / `outputSchema` and a `how_to_call` hint by default (`include_schema: false` for compact names). |
 | `call_tool` | Proxy-invokes one approved upstream tool by `server/tool` ID after local JSON Schema validation, preserving structured content and upstream error flags. |
 
-Whenever you add connections, update approvals, or edit descriptions in the workbench, MCP Shelf notifies connected clients via standard MCP `notifications/tools/list_changed`.
+The stdio bridge forwards `notifications/tools/list_changed` when the exposed tool list or meta-tool descriptions change. The Streamable HTTP endpoint is stateless. It serves fresh meta-tool descriptions on each `tools/list` request, and a client that caches tool definitions may need to reconnect. Run `search_tool` again to see edits to individual upstream tool descriptions.
 
 ## Quick Start
 
@@ -52,7 +52,7 @@ npm start
 Open **http://127.0.0.1:8787**:
 1. In **Connections**, click **Templates** to one-click add classic servers (like free **Exa Search**, **Context7 Docs**, **Sequential Thinking**, or **GitHub OAuth**), or click **Import** to paste existing `mcpServers` JSON / Codex `config.toml`.
 2. Click **Fetch Tools**, review and approve tools in **Tool Catalog**, and test them directly in the built-in **Playground**.
-3. Open **Connect Agents** to pick your transport mode (**Local stdio**, **OAuth 2.1**, or **Streamable HTTP**) and client, then copy the generated snippet.
+3. Open **Connect Agents**, copy the **Streamable HTTP** URL into your client, and sign in with OAuth 2.1 or set a Bearer token. Access profiles have their own URLs and credentials.
 
 Optional global CLI link:
 
@@ -71,8 +71,9 @@ MCP_SHELF_PORT=8788 MCP_SHELF_HOME=~/.config/mcp-shelf-alt npm start
 ### Option B: Self-Hosted Docker Deployment (`MCP_SHELF_MODE=remote`)
 
 Prebuilt multi-arch (`linux/amd64`, `linux/arm64`) images are automatically published to GHCR:
-- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — stable releases (`master` branch & `vX.Y.Z` tags)
-- `ghcr.io/zhangtyzzz/mcp-shelf:alpha` — preview builds (`alpha` branch)
+- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — published from a formal `vX.Y.Z` tag after that commit passes protocol and browser CI.
+- `ghcr.io/zhangtyzzz/mcp-shelf:master-<sha>` — builds from the `master` branch.
+- `ghcr.io/zhangtyzzz/mcp-shelf:alpha` — preview builds from the `alpha` branch and `vX.Y.Z-alpha.N` tags.
 
 Deploy MCP Shelf on your VPS behind **Caddy**, **Nginx Proxy Manager**, or **Cloudflare Tunnel** so all your devices share one authenticated MCP gateway:
 
@@ -92,15 +93,11 @@ See [deploy/Caddyfile.example](deploy/Caddyfile.example) for a 5-line automatic 
 - Admin workbench protected by `scrypt` password verification, per-IP brute-force rate limiting (10 attempts / 15 min), and HMAC-SHA256 signed `HttpOnly; SameSite=Strict; Secure` session cookies.
 - `/mcp` endpoint uses an independent 64-hex-char `Authorization: Bearer <TOKEN>` that can be revealed, copied, or rotated anytime from **Connect Agents**.
 
-## Client Matrix
+## Access profiles and upgrades
 
-| Client | Transport | Verification |
-|---|---|---|
-| **Grok Build** | `grok mcp add mcp_shelf -- <node> <cli> stdio` (or remote HTTP) | Verified on macOS (`grok mcp doctor` + live end-to-end tool calls) |
-| **Codex** | `[mcp_servers.mcp_shelf]` + stdio Bridge | Verified on macOS (discovery + `--roundtrip` execution) |
-| **Claude Code** | `claude mcp add --transport stdio …` (or remote HTTP) | Verified registration & Connected status |
-| **Google Antigravity** | Manage MCP Servers → Raw Config `mcpServers` | Matches official config format |
-| **Any Streamable HTTP Client** | `POST /mcp` + `Authorization: Bearer <TOKEN>` | Verified end-to-end via official MCP SDK |
+Choose **All enabled connections** or **Selected connections** for each access profile. An empty selection grants no connection access. Upgrading from v0.8.5 or earlier keeps the existing scope and credentials for each legacy profile and snapshots the original config to `config.v1.json` with mode `0600`.
+
+Older releases reject the new config format at startup. To roll back, stop the gateway, save a copy of the current config, and review the snapshot for permissions or credentials revoked since the upgrade before restoring it as `config.json`. Start the old version with the restored config. Any changes made after the snapshot need to be reapplied.
 
 ## Internationalization
 

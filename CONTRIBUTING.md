@@ -41,7 +41,7 @@ MCP Shelf uses a clean two-channel release model backed by GitHub Actions + GHCR
 
 | Branch / Tag | Purpose | Automated Docker Image Tags (`linux/amd64`, `linux/arm64`) |
 |---|---|---|
-| **`master`** | Default stable branch (promoted from `alpha` after verification) | `:stable`, `:latest`, `:stable-<sha>` |
+| **`master`** | Default branch (promoted from `alpha` after verification) | `:master-<sha>` |
 | **`alpha`** | Active integration branch — **target all feature/fix PRs here** | `:alpha`, `:alpha-<sha>` |
 | **`vX.Y.Z`** | Stable release tag (e.g. `v0.6.0`) | `:0.6.0`, `:0.6`, `:0`, `:stable`, `:latest` |
 | **`vX.Y.Z-alpha.N`** | Pre-release tag (e.g. `v0.7.0-alpha.1`) | `:0.7.0-alpha.1`, `:alpha` (never touches `:latest`) |
@@ -51,7 +51,7 @@ MCP Shelf uses a clean two-channel release model backed by GitHub Actions + GHCR
 
 1. Fork & branch from `alpha`, implement changes, and open a PR targeting `alpha`.
 2. After CI passes and the PR merges into `alpha`, GHCR publishes `:alpha` automatically for dogfooding.
-3. When ready to release, merge `alpha` → `master`, bump `package.json` + `CHANGELOG.md`, and push a `vX.Y.Z` tag.
+3. When ready to release, update the version and changelog, then merge `alpha` into `master`. Push a `vX.Y.Z` tag matching `package.json`. The tag's own protocol and browser tests must pass before it publishes `:stable` and `:latest`.
 
 ## Adding a New Language (i18n)
 

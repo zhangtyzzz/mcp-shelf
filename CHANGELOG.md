@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.6] - 2026-11-28
+
+### Fixed
+
+- **Configuration import**: Accept Antigravity's `serverUrl` and preserve multiline arrays and quoted values in Codex TOML. Report invalid connection fields before saving those entries.
+- **Access profiles**: Choose all enabled connections or an explicit selection. An empty selection grants no access. The migration preserves legacy access and tokens.
+- **Stable images**: Publish `stable` and `latest` from formal version tags only after same-commit CI passes.
+
+### Changed
+
+- **Connect Agents**: Show one Streamable HTTP endpoint with OAuth, Bearer token, and access-profile options.
+
 ## [0.8.5] - 2026-11-28
 
 ### Security

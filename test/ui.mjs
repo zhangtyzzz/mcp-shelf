@@ -99,18 +99,28 @@ try {
   await p.getByRole('button', { name: 'Clear', exact: true }).click();
   await p.getByText('No activity yet', { exact: true }).waitFor();
 
-  // Clients view: segmented controls (Mode x Client) & Access Profile creation + mobile layout check
+  // Generic endpoint and explicit profile scope
   await p.getByRole('button', { name: /Connect Agents/ }).click();
-  await p.getByRole('tab', { name: 'Google Antigravity', exact: true }).click();
-  await p.getByText('"mcpServers"').waitFor();
-  await p.getByRole('tab', { name: 'OAuth 2.1', exact: true }).click();
-  await p.getByText('grok mcp add --transport http').waitFor();
+  await p.getByRole('heading', { name: 'Streamable HTTP', exact: true }).waitFor();
+  await p.getByText(app.url + '/mcp', { exact: true }).waitFor();
+  await p.getByRole('button', { name: 'Copy URL', exact: true }).waitFor();
+  await p.getByRole('button', { name: 'Show & Copy MCP Token', exact: true }).waitFor();
+  assert.equal(await p.getByRole('tablist').count(), 0);
   await p.getByRole('button', { name: '+ New Profile' }).click();
   const pd = p.getByRole('dialog');
   await pd.getByLabel('Profile ID').fill('vps-demo');
   await pd.getByLabel('Display Name').fill('VPS Demo');
+  assert.equal(await pd.getByLabel('Connection Access').inputValue(), 'selected');
+  await pd.getByLabel('Connection Access').selectOption('all');
+  await pd.getByLabel('Local Demo (demo)').waitFor({ state: 'hidden' });
   await pd.getByRole('button', { name: 'Save Profile' }).click();
-  await p.getByText('VPS Demo', { exact: true }).waitFor();
+  const profile = p.locator('article').filter({ hasText: 'VPS Demo' });
+  await profile.getByText(/All enabled connections/).waitFor();
+  await profile.getByRole('button', { name: 'Edit', exact: true }).click();
+  await pd.getByLabel('Connection Access').selectOption('selected');
+  await pd.getByLabel('Local Demo (demo)').waitFor();
+  await pd.getByRole('button', { name: 'Save Profile' }).click();
+  await profile.getByText(/No connection access/).waitFor();
 
   await p.setViewportSize({ width: 390, height: 844 });
   assert.equal(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -137,10 +147,16 @@ try {
   const imp = p.getByRole('dialog');
   await imp
     .locator('#import-text')
-    .fill(JSON.stringify({ mcpServers: { 'imported-http': { url: 'https://example.com/mcp', enabled: false } } }));
+    .fill(JSON.stringify({ mcpServers: {
+      'imported-http': { serverUrl: 'https://example.com/mcp', enabled: false },
+      'invalid-args': { command: 'npx', args: 'invalid' }
+    } }));
   await imp.getByRole('button', { name: 'Preview', exact: true }).click();
   await imp.getByText('Will import', { exact: true }).waitFor();
   await imp.getByRole('button', { name: 'Import', exact: true }).click();
+  await imp.getByText('Imported from JSON (1)', { exact: true }).waitFor();
+  await imp.getByText('invalid-args', { exact: true }).waitFor();
+  await imp.getByRole('button', { name: 'Cancel', exact: true }).click();
   await p.getByText('imported-http', { exact: true }).waitFor();
 
   // OAuth uses a native browser form, so Chromium controls the Origin header.

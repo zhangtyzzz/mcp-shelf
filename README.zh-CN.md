@@ -29,7 +29,7 @@ MCP Shelf 是一个轻量、零构建的本机 MCP 网关与可视化工作台�
 | `search_tool` | 关键词或精确 `tool_id` 检索已开放工具；**默认直接附带完整 `inputSchema` / `outputSchema`**（传 `include_schema: false` 可切回精简列表），支持中英文模糊匹配。 |
 | `call_tool` | 用 `连接ID/工具名` 与 JSON 参数调用已开放工具，经本机 JSON Schema 校验后转发，完整保留上游结构化内容与错误标记。 |
 
-当你在管理台新增连接、调整白名单或修改描述时，网关会通过 `/mcp-events` 触发标准的 MCP `notifications/tools/list_changed` 通知，让支持热刷新的客户端自动同步。
+工具列表或元工具描述变化时，stdio 桥接会转发 `notifications/tools/list_changed`。Streamable HTTP 端点为无状态连接，每次 `tools/list` 请求都返回最新的元工具描述。缓存工具定义的客户端可能需要重连。逐个修改的上游工具描述，在下次 `search_tool` 查询时即可读取。
 
 ## 快速开始
 
@@ -50,7 +50,7 @@ npm start
 打开 **http://127.0.0.1:8787**：
 1. 在 **连接管理** 点击 **精选模板** 一键添加常用 MCP（如免费的 **Exa Search**、**Context7**、**Sequential Thinking**、**GitHub OAuth**），或点击 **导入配置** 粘贴已有 `mcpServers` JSON / Codex `config.toml`。
 2. 点击 **读取工具** 完成握手发现，在 **工具目录** 逐个或批量开放工具，并可直接 **在线试调** 验证参数与返回。
-3. 打开 **接入 Agent** 选择接入模式（**本机 stdio** / **OAuth 2.1** / **Streamable HTTP**）和对应客户端，一键复制配置。
+3. 打开 **接入 Agent**，把 **Streamable HTTP** 地址复制到客户端，使用 OAuth 2.1 登录或配置 Bearer 令牌。每个权限组有独立的地址和凭据。
 
 也可以全局链接为命令行工具：
 
@@ -69,8 +69,9 @@ MCP_SHELF_PORT=8788 MCP_SHELF_HOME=~/.config/mcp-shelf-alt npm start
 ### 方式 B：Docker 远程自部署（跨设备访问 + Caddy / NPM 反代）
 
 GitHub Actions 自动构建并推送多架构（`linux/amd64`, `linux/arm64`）镜像至 GHCR：
-- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — 稳定版镜像（`master` 分支与 `vX.Y.Z` Tag）
-- `ghcr.io/zhangtyzzz/mcp-shelf:alpha` — 尝鲜版镜像（`alpha` 分支）
+- `ghcr.io/zhangtyzzz/mcp-shelf:stable` / `:latest` — 正式 `vX.Y.Z` 标签对应的提交通过协议和浏览器 CI 后发布。
+- `ghcr.io/zhangtyzzz/mcp-shelf:master-<sha>` — `master` 分支构建。
+- `ghcr.io/zhangtyzzz/mcp-shelf:alpha` — `alpha` 分支与 `vX.Y.Z-alpha.N` 标签的预览构建。
 
 适合部署到你自己的 VPS / 服务器，前置于 Caddy、Nginx Proxy Manager 或 Cloudflare Tunnel 提供 HTTPS；部署后任意电脑的 Grok / Claude / Codex / Antigravity 都可以直连你的统一 MCP 网关：
 
@@ -98,7 +99,7 @@ mcp.example.com {
 **远程模式安全机制：**
 - 启用 `MCP_SHELF_MODE=remote`（或非回环绑定）时，**强制要求**至少 12 位的 `MCP_SHELF_ADMIN_PASSWORD`，未设置直接拒绝启动。
 - 管理台使用 `scrypt` 校验密码 + 防爆破速率限制（15 分钟 10 次） + HMAC-SHA256 签名的 `HttpOnly; SameSite=Strict; Secure` Session Cookie。
-- `/mcp` 端点始终使用独立的 64 位随机 `Authorization: Bearer <TOKEN>`，可在登录后的「接入 Agent」页按需查看、复制或一键轮换（轮换后旧设备立即失效）。
+- `/mcp` 支持 OAuth 2.1 或 64 位十六进制 Bearer 令牌。令牌可在「接入 Agent」页查看、复制和轮换。轮换后，使用旧令牌的设备立即失效。
 
 ## 管理台功能
 
@@ -106,23 +107,17 @@ mcp.example.com {
 2. **工具目录**：实时搜索（按 `/` 快速聚焦）、按连接/授权状态筛选、查看输入/输出 Schema 与 SHA-256 指纹、覆盖工具描述、批量允许/撤销，以及内置 **在线试调**（自动生成参数骨架，`Cmd/Ctrl + Enter` 执行）。
 3. **调用记录**：查看本机网关内存中最近 200 条 Agent 与试调活动流水（耗时、状态、拦截原因），支持 3 秒自动刷新、按来源筛选与清空，不落盘敏感参数。
 4. **元工具描述**：实时预览自动注入给 Agent 的精简服务摘要与目录指纹，自定义三个元工具文案或一键恢复默认。
-5. **接入 Agent**：展示当前实例端口与配置文件路径，一键复制各客户端配置。
+5. **接入 Agent**：复制 Streamable HTTP 地址，查看和轮换令牌，管理权限组。
 
-## 客户端接入矩阵
+## 权限组与升级
 
-| Agent | 接入方式 | 验证状态 |
-|---|---|---|
-| **Grok Build** | `grok mcp add mcp_shelf -- <node> <cli> stdio` | macOS 本地实测注册与 `grok mcp doctor` 握手健康通过（protocol 2025-11-25） |
-| **Codex** | `[mcp_servers.mcp_shelf]` + stdio Bridge | macOS 本地实测通过工具发现与 `--roundtrip` 端到端调用往返 |
-| **Claude Code** | `claude mcp add --transport stdio …` | CLI 2.1.332 实测注册与 Connected 连接 |
-| **Google Antigravity** | Manage MCP Servers → 原始配置 `mcpServers` | 按官方文档格式生成 |
-| **任意 Streamable HTTP 客户端** | `POST http://127.0.0.1:8787/mcp` + `Authorization: Bearer <TOKEN>` | 官方 MCP SDK 端到端实测通过 |
+权限组可选择「全部已启用连接」或「指定连接」。指定模式下，清空列表会撤销该组的连接访问权限。从 v0.8.5 或更早版本升级时，原权限和令牌会保留。网关会将旧配置备份为权限为 `0600` 的 `config.v1.json`。
 
-官方文档参考：[Codex MCP](https://developers.openai.com/codex/mcp) · [Claude Code MCP](https://code.claude.com/docs/en/mcp) · [Google Antigravity MCP](https://antigravity.google/docs/ide-mcp)
+旧版本会拒绝加载新格式。回滚时先停止网关并备份当前配置，检查快照中是否有升级后已撤销的权限或凭据，再将快照恢复为 `config.json` 后启动旧版本。快照之后的改动需要重新应用。
 
 ## 安全与边界
 
-- **本地凭据隔离**：默认配置 `~/.config/mcp-shelf/config.json`（权限 `0600`），Bearer Token 由网关生成并仅保存在本机文件，绝不在管理台界面或导出 JSON 中暴露。
+- **本地凭据隔离**：默认配置 `~/.config/mcp-shelf/config.json`（权限 `0600`），网关令牌可以在管理台按需查看。导出的连接 JSON 不包含令牌。
 - **不存明文 Secret**：上游凭据仅通过环境变量名（`envKeys` / `bearerEnv`）引用，导入外部配置时自动剥离明文值。
 - **四重本机管理台防护**：仅监听 `127.0.0.1`，严格校验 `Host`、`Origin`、`Sec-Fetch-Site` 与 `X-Shelf-CSRF`。请勿将管理台暴露至公网或共享网络。
 - **最小权限原则**：新发现工具默认禁止；更改上游命令、URL 或凭据变量名会自动重置旧授权。`stdio` 进程继承当前系统用户权限，**请仅添加可信服务**。

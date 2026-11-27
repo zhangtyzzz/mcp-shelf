@@ -78,8 +78,6 @@ let allowOnly = false;
 let logSourceFilter = '';
 let logAutoRefresh = false;
 let logPollTimer = null;
-let clientMode = null;
-let clientAgent = 'grok';
 let toastTimer;
 let editing;
 let originButton;
@@ -1022,73 +1020,28 @@ function meta() {
   ];
 }
 
-function snippet(title, description, content) {
-  return panel(
-    title,
-    null,
-    el(
-      'div',
-      { class: 'inside' },
-      el('p', {}, description),
-      el('pre', { class: 'snippet' }, content),
-      btn(
-        t('clients.copy'),
-        async () => {
-          try {
-            await navigator.clipboard.writeText(content);
-            toast(t('toast.copied'));
-          } catch {
-            toast(t('toast.copyFailed'), true);
-          }
-        },
-        'mini'
-      )
-    )
+function copyEndpoint(url) {
+  return btn(
+    t('clients.copyEndpoint'),
+    async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast(t('toast.copied'));
+      } catch {
+        toast(t('toast.copyFailed'), true);
+      }
+    },
+    'mini primary'
   );
 }
 
 function clients() {
-  const b = state.bridge;
-  const kv = Object.entries(b.env);
-  const config = { command: b.command, args: b.args, ...(kv.length ? { env: b.env } : {}) };
-  const toml = [
-    '[mcp_servers.mcp_shelf]',
-    'command = ' + JSON.stringify(b.command),
-    'args = ' + JSON.stringify(b.args),
-    ...(kv.length
-      ? ['', '[mcp_servers.mcp_shelf.env]', ...kv.map(([k, v]) => k + ' = ' + JSON.stringify(v))]
-      : [])
-  ].join('\n');
-  const quote = (s) => "'" + s.replaceAll("'", "'\\''") + "'";
-  const cl = [
-    'claude',
-    'mcp',
-    'add',
-    '--transport',
-    'stdio',
-    'mcp-shelf',
-    ...kv.flatMap(([k, v]) => ['--env', quote(k + '=' + v)]),
-    '--',
-    quote(b.command),
-    ...b.args.map(quote)
-  ].join(' ');
-  const gr = [
-    'grok',
-    'mcp',
-    'add',
-    'mcp_shelf',
-    ...kv.flatMap(([k, v]) => ['-e', quote(k + '=' + v)]),
-    '--',
-    quote(b.command),
-    ...b.args.map(quote)
-  ].join(' ');
-
-  const remoteUrl = state.remoteEndpoint || 'http://127.0.0.1:' + state.port + '/mcp';
+  const remoteUrl = state.remoteEndpoint;
   const tokenBox = el('div');
-  const tokenPanel = panel(
-    state.mode === 'remote' ? t('clients.infoRemote') : t('clients.infoLocal'),
+  const setupPanel = panel(
+    t('clients.setupTitle'),
     actions(
-      pill(state.mode === 'remote' ? t('clients.remoteMode') : '127.0.0.1:' + state.port, 'ok'),
+      copyEndpoint(remoteUrl),
       state.mode === 'remote'
         ? btn(
             t('clients.logout'),
@@ -1103,84 +1056,64 @@ function clients() {
     el(
       'div',
       { class: 'inside' },
-      el('p', {}, t('clients.configPath')),
-      el('code', { class: 'mono' }, state.configFile || '~/.config/mcp-shelf/config.json'),
-      state.mode === 'remote'
-        ? el(
-            'div',
-            { class: 'token-controls' },
-            actions(
-              btn(
-                t('clients.showToken'),
-                async (e) => {
-                  const target = e.currentTarget;
-                  target.disabled = true;
-                  try {
-                    const res = await request('token', 'POST');
-                    tokenBox.replaceChildren(el('pre', { class: 'snippet' }, res.token));
-                    try {
-                      await navigator.clipboard.writeText(res.token);
-                      toast(t('toast.tokenCopied'));
-                    } catch {
-                      toast(t('toast.tokenShown'));
-                    }
-                  } catch (err) {
-                    toast(err.message, true);
-                  } finally {
-                    target.disabled = false;
-                  }
-                },
-                'mini'
-              ),
-              btn(
-                t('clients.rotateToken'),
-                async (e) => {
-                  if (!confirm(t('clients.confirmRotate'))) return;
-                  const target = e.currentTarget;
-                  target.disabled = true;
-                  try {
-                    const res = await request('token/rotate', 'POST');
-                    tokenBox.replaceChildren(el('pre', { class: 'snippet' }, res.token));
-                    toast(t('toast.tokenRotated'));
-                  } catch (err) {
-                    toast(err.message, true);
-                  } finally {
-                    target.disabled = false;
-                  }
-                },
-                'mini danger'
-              )
-            ),
-            tokenBox
+      el('pre', { class: 'snippet' }, remoteUrl),
+      el('p', {}, t('clients.authHint')),
+      el(
+        'div',
+        { class: 'token-controls' },
+        actions(
+          btn(
+            t('clients.showToken'),
+            async (e) => {
+              const target = e.currentTarget;
+              target.disabled = true;
+              try {
+                const res = await request('token', 'POST');
+                tokenBox.replaceChildren(el('pre', { class: 'snippet' }, res.token));
+                try {
+                  await navigator.clipboard.writeText(res.token);
+                  toast(t('toast.tokenCopied'));
+                } catch {
+                  toast(t('toast.tokenShown'));
+                }
+              } catch (err) {
+                toast(err.message, true);
+              } finally {
+                target.disabled = false;
+              }
+            },
+            'mini'
+          ),
+          btn(
+            t('clients.rotateToken'),
+            async (e) => {
+              if (!confirm(t('clients.confirmRotate'))) return;
+              const target = e.currentTarget;
+              target.disabled = true;
+              try {
+                const res = await request('token/rotate', 'POST');
+                tokenBox.replaceChildren(el('pre', { class: 'snippet' }, res.token));
+                toast(t('toast.tokenRotated'));
+              } catch (err) {
+                toast(err.message, true);
+              } finally {
+                target.disabled = false;
+              }
+            },
+            'mini danger'
           )
-        : null
+        ),
+        tokenBox
+      )
     )
   );
 
-  const remoteSnippets =
-    state.mode === 'remote'
-      ? [
-          snippet(
-            t('clients.remoteHttpTitle'),
-            t('clients.remoteHttpDesc'),
-            remoteUrl + '\nAuthorization: Bearer <MCP_SHELF_TOKEN>'
-          ),
-          snippet(
-            t('clients.remoteGrokTitle'),
-            t('clients.remoteGrokDesc'),
-            `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)} --header 'Authorization: Bearer \${MCP_SHELF_TOKEN}'`
-          ),
-          snippet(
-            t('clients.remoteClaudeTitle'),
-            t('clients.remoteClaudeDesc'),
-            `claude mcp add --transport http mcp-shelf ${quote(remoteUrl)} --header 'Authorization: Bearer <MCP_SHELF_TOKEN>'`
-          )
-        ]
-      : [];
-
   const profilesList = state.profiles || [];
   const profileRows = profilesList.map((pr) => {
-    const scopeLabel = pr.servers?.length ? pr.servers.join(', ') : t('profiles.allServers');
+    const scopeLabel = pr.scope === 'all'
+      ? t('profiles.allServers')
+      : pr.servers.join(', ') || t('profiles.noServers');
+    const endpoint = remoteUrl + '/' + pr.id;
     const tokOut = el('div');
     return el(
       'article',
@@ -1199,6 +1132,7 @@ function clients() {
         )
       ),
       actions(
+        copyEndpoint(endpoint),
         btn(
           t('profiles.copyToken'),
           async (e) => {
@@ -1206,8 +1140,7 @@ function clients() {
             target.disabled = true;
             try {
               const res = await request(`profiles/${pr.id}/token`, 'POST');
-              const ep = (state.mode === 'remote' ? remoteUrl : 'http://127.0.0.1:' + state.port + '/mcp') + '/' + pr.id;
-              tokOut.replaceChildren(el('pre', { class: 'snippet' }, `${ep}\nAuthorization: Bearer ${res.token}`));
+              tokOut.replaceChildren(el('pre', { class: 'snippet' }, `${endpoint}\nAuthorization: Bearer ${res.token}`));
               try {
                 await navigator.clipboard.writeText(res.token);
               } catch {}
@@ -1258,178 +1191,9 @@ function clients() {
     profileRows.length ? profileRows : el('div', { class: 'inside' }, el('p', { class: 'sub' }, t('profiles.empty')))
   );
 
-  const activeMode = clientMode || (state.mode === 'remote' ? 'oauth' : 'stdio');
-
-  const modes = [
-    { id: 'stdio', label: t('clients.mode.stdio') },
-    { id: 'oauth', label: t('clients.mode.oauth') },
-    { id: 'http', label: t('clients.mode.http') }
-  ];
-
-  const agentsByMode = {
-    stdio: ['grok', 'codex', 'claude', 'agy'],
-    oauth: ['grok', 'claude', 'generic'],
-    http: ['grok', 'claude', 'codex', 'agy', 'generic']
-  };
-
-  const allowedAgents = agentsByMode[activeMode] || ['generic'];
-  const activeAgent = allowedAgents.includes(clientAgent) ? clientAgent : allowedAgents[0];
-
-  function resolveSnippet(modeId, agentId) {
-    if (modeId === 'stdio') {
-      if (agentId === 'grok') return { desc: t('clients.grokDesc'), code: gr };
-      if (agentId === 'codex') return { desc: t('clients.codexDesc'), code: toml };
-      if (agentId === 'claude') return { desc: t('clients.claudeDesc'), code: cl };
-      return {
-        desc: t('clients.agyDesc'),
-        code: JSON.stringify({ mcpServers: { 'mcp-shelf': config } }, null, 2)
-      };
-    }
-    if (modeId === 'oauth') {
-      if (agentId === 'grok') {
-        return {
-          desc: t('clients.oauthDesc'),
-          code: `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)}`
-        };
-      }
-      if (agentId === 'claude') {
-        return {
-          desc: t('clients.oauthDesc'),
-          code: `claude mcp add --transport http mcp-shelf ${quote(remoteUrl)}`
-        };
-      }
-      return {
-        desc: t('clients.oauthDesc'),
-        code: `${remoteUrl}\n# OAuth 2.1 + PKCE auto-discovered via /.well-known/oauth-protected-resource`
-      };
-    }
-    if (modeId === 'http') {
-      if (agentId === 'grok') {
-        return {
-          desc: t('clients.remoteGrokDesc'),
-          code: `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)} --header 'Authorization: Bearer \${MCP_SHELF_TOKEN}'`
-        };
-      }
-      if (agentId === 'claude') {
-        return {
-          desc: t('clients.remoteClaudeDesc'),
-          code: `claude mcp add --transport http mcp-shelf ${quote(remoteUrl)} --header 'Authorization: Bearer <MCP_SHELF_TOKEN>'`
-        };
-      }
-      if (agentId === 'codex') {
-        return {
-          desc: t('clients.remoteHttpDesc'),
-          code: `[mcp_servers.mcp_shelf]\nurl = ${JSON.stringify(remoteUrl)}\nbearer_token_env_var = "MCP_SHELF_TOKEN"`
-        };
-      }
-      if (agentId === 'agy') {
-        return {
-          desc: t('clients.agyDesc'),
-          code: JSON.stringify(
-            {
-              mcpServers: {
-                'mcp-shelf': {
-                  serverUrl: remoteUrl,
-                  headers: { Authorization: 'Bearer <MCP_SHELF_TOKEN>' }
-                }
-              }
-            },
-            null,
-            2
-          )
-        };
-      }
-      return {
-        desc: state.mode === 'remote' ? t('clients.remoteHttpDesc') : t('clients.localHttpDesc'),
-        code: `${remoteUrl}\nAuthorization: Bearer <MCP_SHELF_TOKEN>`
-      };
-    }
-    return { desc: t('clients.oauthDesc'), code: remoteUrl };
-  }
-
-  const currentSnip = resolveSnippet(activeMode, activeAgent);
-
-  const setupPanel = panel(
-    t('clients.setupTitle'),
-    btn(
-      t('clients.copy'),
-      async () => {
-        try {
-          await navigator.clipboard.writeText(currentSnip.code);
-          toast(t('toast.copied'));
-        } catch {
-          toast(t('toast.copyFailed'), true);
-        }
-      },
-      'mini primary'
-    ),
-    el(
-      'div',
-      { class: 'inside' },
-      el(
-        'div',
-        { class: 'seg-wrap' },
-        el(
-          'div',
-          { class: 'seg-row' },
-          el('span', { class: 'seg-label' }, t('clients.modeLabel')),
-          el(
-            'div',
-            { class: 'segmented', role: 'tablist', 'aria-label': t('clients.modeLabel') },
-            ...modes.map((m) =>
-              el(
-                'button',
-                {
-                  type: 'button',
-                  role: 'tab',
-                  'aria-selected': String(m.id === activeMode),
-                  on: {
-                    click: () => {
-                      clientMode = m.id;
-                      render();
-                    }
-                  }
-                },
-                m.label
-              )
-            )
-          )
-        ),
-        el(
-          'div',
-          { class: 'seg-row' },
-          el('span', { class: 'seg-label' }, t('clients.agentLabel')),
-          el(
-            'div',
-            { class: 'segmented', role: 'tablist', 'aria-label': t('clients.agentLabel') },
-            ...allowedAgents.map((aid) =>
-              el(
-                'button',
-                {
-                  type: 'button',
-                  role: 'tab',
-                  'aria-selected': String(aid === activeAgent),
-                  on: {
-                    click: () => {
-                      clientAgent = aid;
-                      render();
-                    }
-                  }
-                },
-                t('clients.agent.' + aid)
-              )
-            )
-          )
-        )
-      ),
-      el('div', { class: 'snippet-bar' }, el('p', {}, currentSnip.desc)),
-      el('pre', { class: 'snippet' }, currentSnip.code)
-    )
-  );
-
   return [
     hero(t('clients.kicker'), t('clients.title'), t('clients.sub')),
-    el('div', { class: 'stack' }, setupPanel, profilesPanel, tokenPanel)
+    el('div', { class: 'stack' }, setupPanel, profilesPanel)
   ];
 }
 
@@ -1594,6 +1358,8 @@ function openProfileEditor(pr, button) {
   originButton = button;
   profileForm.reset();
   pf('id').readOnly = !!pr;
+  pf('scope').value = pr?.scope || 'selected';
+  updateProfileScope();
   if (pr) {
     pf('id').value = pr.id;
     pf('label').value = pr.label || '';
@@ -1615,6 +1381,11 @@ function openProfileEditor(pr, button) {
   profileDialog.showModal();
 }
 
+function updateProfileScope() {
+  $('#profile-server-fields').hidden = pf('scope').value !== 'selected';
+}
+
+pf('scope').addEventListener('change', updateProfileScope);
 $('#profile-x').onclick = $('#profile-cancel').onclick = () => profileDialog.close();
 profileDialog.addEventListener('close', () => originButton?.focus());
 
@@ -1627,6 +1398,7 @@ profileForm.addEventListener('submit', async (e) => {
     id: pf('id').value,
     label: pf('label').value,
     description: pf('description').value,
+    scope: pf('scope').value,
     servers
   };
   const submit = profileForm.querySelector('[type=submit]');
@@ -1667,54 +1439,58 @@ function openImport(button) {
 $('#import-x').onclick = $('#import-cancel').onclick = () => importDialog.close();
 importDialog.addEventListener('close', () => originButton?.focus());
 
+function showImportResults(res, summary, count) {
+  const list = el(
+    'div',
+    { class: 'import-list' },
+    ...res.items.map(({ server, warnings, conflict }) =>
+      el(
+        'div',
+        { class: 'import-item' },
+        el(
+          'div',
+          { class: 'import-item-head' },
+          el('strong', { class: 'mono' }, `${server.id} (${server.transport})`),
+          pill(conflict ? t('import.conflict') : t('import.willImport'), conflict ? 'warn' : 'ok')
+        ),
+        el('div', { class: 'sub mono' }, server.transport === 'stdio' ? server.command : server.url),
+        ...warnings.map((w) => el('div', { class: 'warn-note' }, w))
+      )
+    ),
+    ...res.skipped.map((s) =>
+      el(
+        'div',
+        { class: 'import-item' },
+        el(
+          'div',
+          { class: 'import-item-head' },
+          el('strong', { class: 'mono' }, s.id),
+          pill(t('import.skipped'), 'bad')
+        ),
+        el('div', { class: 'sub' }, s.reason)
+      )
+    )
+  );
+  importPreview.replaceChildren(
+    el(
+      'div',
+      { class: 'sub' },
+      t(summary, {
+        format: res.format.toUpperCase(),
+        count
+      })
+    ),
+    list
+  );
+  importPreview.hidden = false;
+}
+
 $('#import-check').addEventListener('click', async () => {
   importError.textContent = '';
   importPreview.hidden = true;
   try {
     const res = await request('import/preview', 'POST', { text: importText.value });
-    const list = el(
-      'div',
-      { class: 'import-list' },
-      ...res.items.map(({ server, warnings, conflict }) =>
-        el(
-          'div',
-          { class: 'import-item' },
-          el(
-            'div',
-            { class: 'import-item-head' },
-            el('strong', { class: 'mono' }, `${server.id} (${server.transport})`),
-            pill(conflict ? t('import.conflict') : t('import.willImport'), conflict ? 'warn' : 'ok')
-          ),
-          el('div', { class: 'sub mono' }, server.transport === 'stdio' ? server.command : server.url),
-          ...warnings.map((w) => el('div', { class: 'warn-note' }, w))
-        )
-      ),
-      ...res.skipped.map((s) =>
-        el(
-          'div',
-          { class: 'import-item' },
-          el(
-            'div',
-            { class: 'import-item-head' },
-            el('strong', { class: 'mono' }, s.id),
-            pill(t('import.skipped'), 'bad')
-          ),
-          el('div', { class: 'sub' }, s.reason)
-        )
-      )
-    );
-    importPreview.replaceChildren(
-      el(
-        'div',
-        { class: 'sub' },
-        t('import.summary', {
-          format: res.format.toUpperCase(),
-          count: res.items.filter((x) => !x.conflict).length
-        })
-      ),
-      list
-    );
-    importPreview.hidden = false;
+    showImportResults(res, 'import.summary', res.items.filter((x) => !x.conflict).length);
   } catch (err) {
     importError.textContent = err.message;
   }
@@ -1727,15 +1503,18 @@ importForm.addEventListener('submit', async (e) => {
   submit.disabled = true;
   try {
     const res = await request('import', 'POST', { text: importText.value });
-    importDialog.close();
-    await load();
-    render();
-    toast(
-      res.imported.length
-        ? t('toast.imported', { count: res.imported.length, ids: res.imported.join(', ') })
-        : t('toast.importNone'),
-      !res.imported.length
-    );
+    if (res.skipped.length || !res.imported.length) {
+      showImportResults({ ...res, items: [] }, 'import.finished', res.imported.length);
+    } else {
+      importDialog.close();
+    }
+    if (res.imported.length) {
+      await load();
+      render();
+      toast(t('toast.imported', { count: res.imported.length, ids: res.imported.join(', ') }));
+    } else {
+      importError.textContent = t('toast.importNone');
+    }
   } catch (err) {
     importError.textContent = err.message;
   } finally {

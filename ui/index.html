@@ -60,7 +60,7 @@
         </button>
       </nav>
       <footer>
-        <i class="live"></i> <span id="mode-label" data-i18n="footer.local">Local instance</span> <small>v0.8.5</small>
+        <i class="live"></i> <span id="mode-label" data-i18n="footer.local">Local instance</span> <small>v0.8.6</small>
       </footer>
     </aside>
     <main>
@@ -187,8 +187,14 @@
           <label><span data-i18n="profiles.label">Display Name</span><input name="label" maxlength="100" placeholder="VPS Production"></label>
         </div>
         <label><span data-i18n="profiles.desc">Description (optional)</span><input name="description" maxlength="400" placeholder="Only search & docs tools"></label>
-        <div>
-          <div class="sub" data-i18n="profiles.servers">Allowed MCP Connections (leave all unchecked to allow all)</div>
+        <label><span data-i18n="profiles.scope">Connection Access</span>
+          <select name="scope">
+            <option value="selected" data-i18n="profiles.selectedServers">Selected connections</option>
+            <option value="all" data-i18n="profiles.allServers">All enabled connections</option>
+          </select>
+        </label>
+        <div id="profile-server-fields">
+          <div class="sub" data-i18n="profiles.servers">Choose the connections this profile can access.</div>
           <div id="profile-servers" class="check-grid"></div>
         </div>
         <p id="profile-error" class="err" role="alert"></p>

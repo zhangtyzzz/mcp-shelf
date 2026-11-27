@@ -3,9 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { parse as parseToml } from 'smol-toml';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.8.5';
+export const APP_VERSION = '0.8.6';
+const CONFIG_VERSION = 2;
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));
 export const DEFAULT_DIR = () => path.join(os.homedir(), '.config', APP_NAME);
@@ -224,13 +226,18 @@ export function profile(v) {
   if (!rec(v) || typeof v.id !== 'string' || !serverId.test(v.id)) {
     throw fail('Profile ID must start with a lowercase letter and contain only a-z, 0-9, -, _.');
   }
+  if (v.scope !== 'all' && v.scope !== 'selected') {
+    throw fail('Profile scope must be "all" or "selected".');
+  }
+  const servers = [...new Set(array(v.servers, (x) => serverId.test(x), 'Profile servers', 40))];
   const tok = typeof v.token === 'string' && /^[0-9a-f]{64}$/.test(v.token) ? v.token : token();
   return {
     id: v.id,
     label: limited(v.label, 'Profile label', 100) || v.id,
     description: limited(v.description, 'Profile description', 400),
     token: tok,
-    servers: [...new Set(array(v.servers, (x) => serverId.test(x), 'Profile servers', 40))]
+    scope: v.scope,
+    servers: v.scope === 'all' ? [] : servers
   };
 }
 
@@ -317,7 +324,7 @@ export function openConfig(dir) {
       file,
       JSON.stringify(
         {
-          version: 1,
+          version: CONFIG_VERSION,
           token: token(),
           descriptions: defaults,
           settings: defaultSettings,
@@ -335,7 +342,7 @@ export function openConfig(dir) {
   if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (
-    raw.version !== 1 ||
+    (raw.version !== 1 && raw.version !== CONFIG_VERSION) ||
     !/^[0-9a-f]{64}$/.test(raw.token || '') ||
     !Array.isArray(raw.servers) ||
     raw.servers.length > 40
@@ -348,9 +355,16 @@ export function openConfig(dir) {
   }
   let cfg = {
     ...raw,
+    version: CONFIG_VERSION,
     descriptions: descriptions(raw.descriptions),
     settings: normalizeSettings(raw.settings),
-    profiles: rawProfiles.map(profile),
+    profiles: rawProfiles.map((entry) => {
+      if (raw.version === 1 && rec(entry)) {
+        const legacyServers = array(entry.servers, (x) => serverId.test(x), 'Profile servers', 40);
+        return profile({ ...entry, scope: legacyServers.length ? 'selected' : 'all' });
+      }
+      return profile(entry);
+    }),
     servers: raw.servers.map(source)
   };
   if (new Set(cfg.servers.map((s) => s.id)).size !== cfg.servers.length) {
@@ -359,7 +373,7 @@ export function openConfig(dir) {
   if (new Set(cfg.profiles.map((p) => p.id)).size !== cfg.profiles.length) {
     throw new Error('Duplicate profile IDs.');
   }
-  return {
+  const store = {
     file,
     dir,
     get: () => cfg,
@@ -374,6 +388,16 @@ export function openConfig(dir) {
       cfg = next;
     }
   };
+  if (raw.version === 1) {
+    // Keep the original inode so a downgrade has an exact, private snapshot.
+    try {
+      fs.linkSync(file, path.join(dir, 'config.v1.json'));
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    store.save(cfg);
+  }
+  return store;
 }
 
 function normalizeId(rawId) {
@@ -386,58 +410,6 @@ function normalizeId(rawId) {
   return id.slice(0, 48);
 }
 
-function parseTomlValue(raw) {
-  const s = raw.trim();
-  if (!s) return undefined;
-  if (s === 'true') return true;
-  if (s === 'false') return false;
-  if (s.startsWith('"') || s.startsWith('[')) {
-    return JSON.parse(s);
-  }
-  if (s.startsWith("'") && s.endsWith("'")) {
-    return s.slice(1, -1);
-  }
-  return s;
-}
-
-function parseCodexToml(text) {
-  const servers = {};
-  let currentId = null;
-  let inEnv = false;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.replace(/^\s*#.*$/, '').trim();
-    if (!line) continue;
-    const secMatch = /^\[mcp_servers\.([A-Za-z0-9_-]+)(?:\.(env))?\]$/.exec(line);
-    if (secMatch) {
-      currentId = secMatch[1];
-      inEnv = secMatch[2] === 'env';
-      servers[currentId] ??= { env: {} };
-      continue;
-    }
-    if (line.startsWith('[')) {
-      currentId = null;
-      inEnv = false;
-      continue;
-    }
-    if (!currentId) continue;
-    const kv = /^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/.exec(line);
-    if (!kv) continue;
-    const [, key, valStr] = kv;
-    const cleaned = valStr.replace(/\s+#.*$/, '').trim();
-    try {
-      const val = parseTomlValue(cleaned);
-      if (inEnv) {
-        servers[currentId].env[key] = String(val ?? '');
-      } else {
-        servers[currentId][key] = val;
-      }
-    } catch {
-      // Ignore unparseable optional TOML fields (e.g. timeouts)
-    }
-  }
-  return servers;
-}
-
 /**
  * Parse pasted Claude/Antigravity/Cursor JSON (`mcpServers`) or Codex TOML (`[mcp_servers.*]`)
  * into validated MCP Shelf connection candidates. Secret env values are never stored.
@@ -447,30 +419,33 @@ export function parseImportConfig(rawText) {
   let entries;
   let format;
 
-  if (/^\[mcp_servers\./m.test(input)) {
-    entries = parseCodexToml(input);
-    format = 'toml';
-  } else if (input.startsWith('{')) {
+  if (input.startsWith('{')) {
     let parsed;
     try {
       parsed = JSON.parse(input);
     } catch {
       throw fail('JSON 格式无效，请检查括号与引号。');
     }
-    if (rec(parsed) && rec(parsed.mcpServers)) {
+    if (Object.hasOwn(parsed, 'mcpServers')) {
+      if (!rec(parsed.mcpServers)) throw fail('mcpServers 必须是对象。');
       entries = parsed.mcpServers;
-      format = 'json';
-    } else if (rec(parsed) && (typeof parsed.command === 'string' || typeof parsed.url === 'string')) {
+    } else if (['command', 'url', 'serverUrl'].some((key) => Object.hasOwn(parsed, key))) {
       entries = { [parsed.id || 'imported']: parsed };
-      format = 'json';
-    } else if (rec(parsed)) {
-      entries = parsed;
-      format = 'json';
     } else {
-      throw fail('未找到可识别的 mcpServers 配置对象。');
+      entries = parsed;
     }
+    format = 'json';
   } else {
-    throw fail('支持粘贴 mcpServers JSON 或 Codex config.toml 的 [mcp_servers.*] 片段。');
+    try {
+      entries = parseToml(input, { integersAsBigInt: 'asNeeded', unsafeKeyBehaviour: 'throw' }).mcp_servers;
+    } catch (err) {
+      const at = Number.isInteger(err.line) ? `（第 ${err.line} 行）` : '';
+      throw fail(`TOML 格式无效${at}，请检查配置文件。`);
+    }
+    if (!rec(entries) || entries instanceof Date) {
+      throw fail('未找到 Codex config.toml 的 mcp_servers 配置表。');
+    }
+    format = 'toml';
   }
 
   const items = [];
@@ -501,41 +476,36 @@ export function parseImportConfig(rawText) {
       allowlist: []
     };
 
-    if (typeof cfg.command === 'string' && cfg.command.trim()) {
-      candidate.transport = 'stdio';
-      candidate.command = cfg.command.trim();
-      candidate.args = Array.isArray(cfg.args) ? cfg.args.map(String) : [];
-      candidate.cwd = typeof cfg.cwd === 'string' ? cfg.cwd : '';
-      const envKeys = [];
-      if (Array.isArray(cfg.envKeys)) {
-        envKeys.push(...cfg.envKeys);
+    try {
+      const hasCommand = Object.hasOwn(cfg, 'command');
+      const hasUrl = Object.hasOwn(cfg, 'url');
+      const hasServerUrl = Object.hasOwn(cfg, 'serverUrl');
+      if (hasCommand && (hasUrl || hasServerUrl)) throw fail('command 与 MCP URL 不能同时设置。');
+      if (hasUrl && hasServerUrl && cfg.url !== cfg.serverUrl) {
+        throw fail('url 与 serverUrl 指向不同的值。');
       }
-      if (rec(cfg.env)) {
-        const keys = Object.keys(cfg.env).filter((k) => envName.test(k));
+      if (hasCommand) {
+        candidate.transport = 'stdio';
+        candidate.command = cfg.command;
+        candidate.args = cfg.args;
+        candidate.cwd = cfg.cwd;
+        const envKeys = array(cfg.envKeys, isAllowedEnvName, '环境变量名', 50);
+        const keys = rec(cfg.env) ? Object.keys(cfg.env).filter((k) => envName.test(k)) : [];
+        if (cfg.env !== undefined && !rec(cfg.env)) throw fail('env 必须是对象。');
         if (keys.length) {
-          envKeys.push(...keys);
           warnings.push(`仅导入环境变量名 (${keys.join(', ')})，未保存明文值，请在启动网关的环境中设置。`);
         }
+        candidate.envKeys = [...new Set([...envKeys, ...keys])];
+      } else if (hasUrl || hasServerUrl) {
+        candidate.transport = 'http';
+        candidate.url = hasUrl ? cfg.url : cfg.serverUrl;
+        candidate.bearerEnv = cfg.bearerEnv === undefined ? cfg.bearer_token_env_var : cfg.bearerEnv;
+        if (rec(cfg.headers) && Object.keys(cfg.headers).length && !candidate.bearerEnv) {
+          warnings.push('检测到自定义 headers，未导入明文凭据；如需认证请配置 Bearer 环境变量名。');
+        }
+      } else {
+        throw fail('缺少 command、url 或 serverUrl。');
       }
-      candidate.envKeys = [...new Set(envKeys)];
-    } else if (typeof cfg.url === 'string' && cfg.url.trim()) {
-      candidate.transport = 'http';
-      candidate.url = cfg.url.trim();
-      candidate.bearerEnv =
-        typeof cfg.bearerEnv === 'string'
-          ? cfg.bearerEnv
-          : typeof cfg.bearer_token_env_var === 'string'
-            ? cfg.bearer_token_env_var
-            : '';
-      if (rec(cfg.headers) && Object.keys(cfg.headers).length && !candidate.bearerEnv) {
-        warnings.push('检测到自定义 headers，未导入明文凭据；如需认证请配置 Bearer 环境变量名。');
-      }
-    } else {
-      skipped.push({ id: rawKey, reason: '缺少 command 或 url' });
-      continue;
-    }
-
-    try {
       const validated = source(candidate);
       seen.add(id);
       items.push({ server: validated, warnings });
