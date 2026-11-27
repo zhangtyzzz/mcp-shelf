@@ -5,7 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.8.7';
+export const APP_VERSION = '0.8.8';
 const CONFIG_VERSION = 2;
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));

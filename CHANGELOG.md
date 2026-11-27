@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.8] - 2026-11-28
+
+- Preview up to 20 upstream MCP servers in the gateway instructions and tool descriptions. Show compact server IDs when descriptions exceed the character budget and link to `list_mcps` for the remaining connections.
+
 ## [0.8.7] - 2026-11-28
 
 - Replace third-party client configuration import with a versioned Shelf backup and restore workflow. Backups include connections, tool approvals, settings and access profiles. Authentication remains with the instance.

@@ -31,6 +31,8 @@ MCP Shelf 是一个轻量、零构建的本机 MCP 网关与可视化工作台�
 
 支持通知的 Streamable HTTP 客户端可在原地址用 `GET /mcp`（或 `GET /mcp/<权限组>`）打开经过鉴权的 SSE 流，接收 `notifications/tools/list_changed`。stdio 桥接也会转发该通知。每次 `tools/list` 返回最新的元工具描述，单个上游工具的描述在下次 `search_tool` 时读取。缓存工具定义且没有监听通知的客户端可能需要重连。提供给模型的连接摘要只使用已保存的连接与批准名单，上游探测和健康状态不会改写这部分提示词。实际可用工具以 `list_mcps` 和 `search_tool` 的结果为准。
 
+连接摘要最多预览 20 个连接。详细描述超出字符预算时，会切换为精简的服务 ID 列表。可用 `list_mcps` 返回的 `next_offset` 分页查看完整目录。
+
 ## 快速开始
 
 需要 **Node.js 22+**（macOS / Linux）。

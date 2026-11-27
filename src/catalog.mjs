@@ -30,6 +30,7 @@ const page = {
   limit: { type: 'integer', minimum: 1, maximum: 25 },
   offset: { type: 'integer', minimum: 0, maximum: 20_000 }
 };
+const SERVER_PREVIEW_LIMIT = 20;
 const sid = { type: 'string', pattern: serverId.source, maxLength: 48 };
 const tid = { type: 'string', pattern: toolId.source, maxLength: 177 };
 
@@ -281,51 +282,29 @@ export class Catalog {
       .servers.filter((s) => s.enabled && s.allowlist.length > 0 && profileAllows(profile, s.id));
     if (!active.length) return '';
 
-    const entries = active.map((s) => {
+    const heading = 'Connected MCP servers:';
+    const preview = active.slice(0, SERVER_PREVIEW_LIMIT);
+    const overflow = (shown) =>
+      shown < active.length ? `\n- (+${active.length - shown} more servers; call list_mcps)` : '';
+    const details = preview.map((s) => {
       const count = s.allowlist.length;
       const word = count === 1 ? 'tool' : 'tools';
       const desc = cleanMsg(s.description || (s.label !== s.id ? s.label : ''), 120);
-      return {
-        id: s.id,
-        count,
-        fullLine: desc ? `- ${s.id} (${count} ${word}): ${desc}` : `- ${s.id} (${count} ${word})`,
-        shortItem: `${s.id}(${count})`
-      };
+      const line = `- ${s.id} (${count} ${word})`;
+      return desc ? `${line}: ${desc}` : line;
     });
+    const detailed = `${[heading, ...details].join('\n')}${overflow(preview.length)}`;
+    if (detailed.length <= maxChars) return detailed;
 
-    const lines = ['Connected MCP servers:'];
-    let used = lines[0].length;
-    let shown = 0;
-    for (const item of entries) {
-      const reserve = shown < entries.length - 1 ? 48 : 0;
-      if (used + 1 + item.fullLine.length + reserve > maxChars) break;
-      lines.push(item.fullLine);
-      used += 1 + item.fullLine.length;
-      shown++;
-    }
-    if (shown === entries.length) return lines.join('\n');
-
-    // If too many servers for multi-line descriptions, append a compact overflow summary
-    const remaining = entries.length - shown;
-    if (shown > 0) {
-      lines.push(`- (+${remaining} more servers; call list_mcps)`);
-      return lines.join('\n');
+    // Prefer showing more complete server IDs when the detailed preview does not fit.
+    const ids = preview.map(({ id }) => id);
+    for (let shown = ids.length; shown > 0; shown--) {
+      const compact = `${heading} ${ids.slice(0, shown).join(', ')}${overflow(shown)}`;
+      if (compact.length <= maxChars) return compact;
     }
 
-    // Ultra-compact fallback when maxChars is very small
-    const compact = [];
-    let cLen = 'Connected MCP servers: '.length;
-    for (const item of entries) {
-      if (cLen + item.shortItem.length + 28 > maxChars) break;
-      compact.push(item.shortItem);
-      cLen += item.shortItem.length + 2;
-    }
-    const left = entries.length - compact.length;
-    return (
-      'Connected MCP servers: ' +
-      compact.join(', ') +
-      (left > 0 ? ` (+${left} more; call list_mcps)` : '')
-    );
+    const summary = `${heading} ${active.length}; call list_mcps`;
+    return summary.length <= maxChars ? summary : '';
   }
 
   metaInstructions(profile = null) {

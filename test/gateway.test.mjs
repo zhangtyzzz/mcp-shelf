@@ -489,23 +489,40 @@ test('remote mode enforces admin password, HttpOnly signed session cookie, and M
 test('context budgets (serverReminder & search schema cap), configurable log retention/redaction, and idle settings', async t => {
  const f = await fixture(t);
 
- // 1. Add 15 servers with long descriptions and verify serverReminder stays strictly within budget
- for (let i = 0; i < 15; i++) {
-  await f.api('servers', 'POST', {
-   id: `srv-${i}`,
-   label: `Service ${i}`,
-   description: `Long description for upstream service number ${i} `.repeat(3),
-   transport: 'http',
-   url: `https://example-${i}.com/mcp`,
-   enabled: true,
-   allowlist: ['tool_a', 'tool_b']
-  }, 201);
+ // 1. Keep the first 20 IDs visible even when their full descriptions exceed the budget.
+ const servers = Array.from({ length: 21 }, (_, i) => ({
+  id: `srv-${i}`,
+  label: `Service ${i}`,
+  description: `Long description for upstream service number ${i} `.repeat(3),
+  transport: 'http',
+  url: 'http://127.0.0.1:1/mcp',
+  enabled: true,
+  allowlist: ['tool_a', 'tool_b']
+ }));
+ const preview = servers.slice(0, 20);
+ for (const server of preview) {
+  await f.api('servers', 'POST', server, 201);
  }
  const c = await f.bridge();
- const listed = await c.listTools();
- // Meta-tool descriptions stay compact even with 15 servers
- assert.ok(listed.tools[1].description.length < 1100);
- assert.match(listed.tools[1].description, /\+\d+ more/);
+ const toolReminders = async (client) => (await client.listTools()).tools.map(
+  (tool) => tool.description.split('\n\n').at(-1)
+ );
+ const checkPreview = (reminder, maxChars, omitted) => {
+  assert.ok(reminder.length <= maxChars);
+  assert.deepEqual(reminder.match(/\bsrv-\d+\b/g), preview.map(({ id }) => id));
+  assert.equal(Number(reminder.match(/\(\+(\d+) more servers; call list_mcps\)/)?.[1] ?? 0), omitted);
+ };
+ checkPreview(c.getInstructions().split('\n\n')[0], 1400, 0);
+ for (const reminder of await toolReminders(c)) checkPreview(reminder, 480, 0);
+
+ await f.api('servers', 'POST', servers[20], 201);
+ const reconnected = await f.bridge();
+ checkPreview(reconnected.getInstructions().split('\n\n')[0], 1400, 1);
+ for (const reminder of await toolReminders(c)) checkPreview(reminder, 480, 1);
+ const remaining = await data(c, 'list_mcps', { offset: 20 });
+ assert.deepEqual(remaining.servers.map(({ id }) => id), [servers[20].id]);
+ assert.equal(remaining.total, 21);
+ assert.equal(remaining.next_offset, null);
 
  // 2. Configurable logLimit, logDetails redaction, and idleMinutes persistence
  await f.api('servers', 'POST', demoSource(['echo']), 201);

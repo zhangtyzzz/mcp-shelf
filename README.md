@@ -33,6 +33,8 @@ MCP Shelf is a lightweight, zero-build Model Context Protocol (MCP) gateway and 
 
 Clients can receive `notifications/tools/list_changed` on the authenticated SSE stream opened with `GET /mcp` (or `GET /mcp/<profile>`). The stdio bridge forwards the same notification. Each `tools/list` request returns the current meta-tool descriptions. Run `search_tool` again to see edits to individual upstream tool descriptions. Clients that cache tool definitions and do not listen for notifications may need to reconnect. The summary in the model-facing tool definitions reflects configured approvals, so upstream discovery and health checks leave the prompt prefix stable. Use `list_mcps` or `search_tool` for current availability.
 
+The summary previews up to 20 connections, switching to a compact list of server IDs when the descriptions exceed its character budget. Use `list_mcps` with `next_offset` to page through the full catalog.
+
 ## Quick Start
 
 Requires **Node.js 22+** (macOS / Linux).
