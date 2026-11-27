@@ -464,7 +464,7 @@ export class Catalog {
               error = 'OAuth sign-in required. Click OAuth Sign In in Connections.';
               throw new Error('');
             }
-            const provider = this.oauthStore.createProvider(s.id, undefined);
+            const provider = this.oauthStore.createProvider(s.id);
             transport = httpClient(s.url, {}, provider);
           } else {
             if (s.bearerEnv && !process.env[s.bearerEnv]) {

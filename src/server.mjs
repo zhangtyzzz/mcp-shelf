@@ -233,7 +233,9 @@ export async function launch({
   }
 
   const cfg = openConfig(dir);
-  const oauthStore = new OAuthStore(dir);
+  const oauthStore = new OAuthStore(dir, () =>
+    (publicUrl || `http://127.0.0.1:${server.address().port}`) + '/api/oauth/callback'
+  );
   const cat = new Catalog(cfg, oauthStore);
   const tasks = new TaskManager();
   const csrf = token();

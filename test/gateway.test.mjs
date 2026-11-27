@@ -559,6 +559,8 @@ test('v0.7.0: access profiles, schema drift lock, MCP 2025-11-25 async tasks, ic
 
  // 6. End-to-end OAuth 2.1 + PKCE flow against a local mock OAuth + MCP server
  let issuedToken = 'oauth-access-token-12345';
+ let refreshAttempts = 0;
+ let refreshError;
  const oauthServer = http.createServer(async (req, res) => {
   const base = 'http://127.0.0.1:' + oauthServer.address().port;
   const u = new URL(req.url, base);
@@ -582,8 +584,22 @@ test('v0.7.0: access profiles, schema drift lock, MCP 2025-11-25 async tasks, ic
    return res.end(JSON.stringify({ ...meta, client_id: 'mock-client-1' }));
   }
   if (u.pathname === '/token' && req.method === 'POST') {
+   let body = '';
+   for await (const chunk of req) body += chunk;
+   const params = new URLSearchParams(body);
+   if (params.get('grant_type') === 'refresh_token') {
+    refreshAttempts++;
+    assert.equal(params.get('refresh_token'), 'mock-refresh-token');
+    if (refreshError) {
+     res.writeHead(refreshError === 'server_error' ? 503 : 400, { 'Content-Type': 'application/json' });
+     return res.end(JSON.stringify({ error: refreshError }));
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ access_token: issuedToken, token_type: 'Bearer', expires_in: 3600 }));
+   }
+   assert.equal(params.get('grant_type'), 'authorization_code');
    res.writeHead(200, { 'Content-Type': 'application/json' });
-   return res.end(JSON.stringify({ access_token: issuedToken, token_type: 'Bearer', expires_in: 3600 }));
+   return res.end(JSON.stringify({ access_token: issuedToken, refresh_token: 'mock-refresh-token', token_type: 'Bearer', expires_in: 3600 }));
   }
   if (u.pathname === '/mcp') {
    if (req.headers.authorization !== 'Bearer ' + issuedToken) {
@@ -621,6 +637,37 @@ test('v0.7.0: access profiles, schema drift lock, MCP 2025-11-25 async tasks, ic
  assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').oauthStatus, 'connected');
  await f.api('servers/oauth-srv/refresh', 'POST');
  assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').tools[0].name, 'secret_read');
+
+ // Existing deployments may have tokens without a separately saved callback or echoed DCR redirect URI.
+ const oauthFile = path.join(f.app.config.dir, 'oauth', 'oauth-srv.json');
+ const legacy = JSON.parse(fs.readFileSync(oauthFile, 'utf8'));
+ delete legacy.redirectUrl;
+ delete legacy.clientInformation.redirect_uris;
+ fs.writeFileSync(oauthFile, JSON.stringify(legacy));
+ issuedToken = 'oauth-access-token-renewed';
+ await f.restart();
+ await Promise.all([f.api('servers/oauth-srv/refresh', 'POST'), f.api('servers/oauth-srv/refresh', 'POST')]);
+ assert.equal(refreshAttempts, 1);
+ const renewed = JSON.parse(fs.readFileSync(oauthFile, 'utf8'));
+ assert.equal(renewed.tokens.access_token, issuedToken);
+ assert.equal(renewed.tokens.refresh_token, 'mock-refresh-token');
+ assert.equal(renewed.codeVerifier, legacy.codeVerifier);
+ assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').status, 'ready');
+
+ // A transient upstream failure preserves the refresh token for retry.
+ issuedToken = 'oauth-access-token-revoked';
+ refreshError = 'server_error';
+ const unavailable = await f.api('servers/oauth-srv/refresh', 'POST', undefined, 502);
+ assert.match(unavailable.error, /OAuth token refresh failed/);
+ assert.deepEqual(JSON.parse(fs.readFileSync(oauthFile, 'utf8')), renewed);
+
+ // A revoked refresh token requires a fresh user sign-in.
+ refreshError = 'invalid_grant';
+ const failure = await f.api('servers/oauth-srv/refresh', 'POST', undefined, 502);
+ assert.match(failure.error, /OAuth sign-in required/);
+ assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').oauthStatus, 'required');
+ assert.equal(refreshAttempts, 3);
+ assert.equal((await f.api('servers/oauth-srv/oauth/start', 'POST')).status, 'redirect');
 
  await f.api('servers/oauth-srv/oauth/logout', 'POST');
  assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').oauthStatus, 'required');

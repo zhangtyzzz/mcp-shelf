@@ -3,9 +3,12 @@ import path from 'node:path';
 import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import { APP_NAME, token } from './config.mjs';
 
+const signInRequired = 'OAuth sign-in required. Click OAuth Sign In in Connections.';
+
 export class OAuthStore {
-  constructor(dir) {
+  constructor(dir, defaultRedirectUrl) {
     this.dir = path.join(dir, 'oauth');
+    this.defaultRedirectUrl = defaultRedirectUrl;
     this.pending = new Map();
   }
 
@@ -52,35 +55,54 @@ export class OAuthStore {
 
   createProvider(serverId, redirectUrl, { onAuthorize, stateValue } = {}) {
     const store = this;
+    const background = redirectUrl === undefined;
     return {
       get redirectUrl() {
-        return redirectUrl;
+        if (!background) return redirectUrl;
+        // The SDK uses a redirect URL to select the PKCE refresh flow, even on background requests.
+        const saved = store.read(serverId);
+        return saved.redirectUrl || saved.clientInformation?.redirect_uris?.[0] || store.defaultRedirectUrl();
       },
       get clientMetadata() {
         return {
           client_name: APP_NAME,
-          redirect_uris: redirectUrl ? [String(redirectUrl)] : [],
+          redirect_uris: [String(this.redirectUrl)],
           grant_types: ['authorization_code', 'refresh_token'],
           response_types: ['code'],
           token_endpoint_auth_method: 'none'
         };
       },
       state() {
+        if (background) {
+          // Only the admin sign-in action can start a new browser authorization flow.
+          const current = store.read(serverId);
+          if (current.tokens?.refresh_token) throw new Error('OAuth token refresh failed. Refresh the connection to retry.');
+          if (current.tokens) {
+            delete current.tokens;
+            store.write(serverId, current);
+          }
+          throw new Error(signInRequired);
+        }
         return stateValue || token().slice(0, 32);
       },
       clientInformation() {
-        return store.read(serverId).clientInformation;
-      },
-      saveClientInformation(info) {
         const cur = store.read(serverId);
-        store.write(serverId, { ...cur, clientInformation: info });
+        if (background && !cur.clientInformation) throw new Error(signInRequired);
+        return cur.clientInformation;
       },
+      ...(!background && {
+        saveClientInformation(info) {
+          const cur = store.read(serverId);
+          store.write(serverId, { ...cur, clientInformation: info });
+        }
+      }),
       tokens() {
         return store.read(serverId).tokens;
       },
       saveTokens(tokens) {
         const cur = store.read(serverId);
-        store.write(serverId, { ...cur, tokens });
+        if (background && !cur.clientInformation) throw new Error(signInRequired);
+        store.write(serverId, { ...cur, ...(!background && { redirectUrl: String(redirectUrl) }), tokens });
       },
       redirectToAuthorization(url) {
         if (onAuthorize) onAuthorize(url);
