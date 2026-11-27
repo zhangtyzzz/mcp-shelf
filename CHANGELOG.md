@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-11-27
+
+### Added
+- **Context & Scale Budgets**:
+  - Bounded `serverReminder` character budget (`1400` chars in `initialize.instructions`, `480` chars in meta-tool descriptions with automatic compact fallback) so 40+ servers never exceed provider description limits.
+  - Per-response `search_tool` schema byte budget (`16 KB`): high-relevance matches include full `inputSchema`, overflow matches gracefully degrade to compact metadata + `required_params`.
+  - Upstream failure exponential backoff circuit breaker (`30s → 60s → 120s → 300s`) and stale-while-revalidate catalog refresh so dead upstreams never stall searches.
+- **Configurable Activity Log & Redacted Payloads**:
+  - Persistent `settings` (`logLimit`: `0 | 50 | 200 | 500 | 1000`, `logDetails`: boolean, `idleMinutes`: `0 | 5 | 10 | 30 | 60`) configurable right from the Activity view.
+  - Optional detail recording automatically redacts sensitive keys (`token`, `secret`, `password`, `apiKey`, `authorization`, `cookie`) and lets you replay any `call_tool` directly in the Tool Catalog playground.
+- **Stdio Idle Hibernation**: Idle `stdio` upstream child processes automatically sleep after `idleMinutes` while preserving their discovered tool catalog in memory, waking on demand when called.
+- **Automated Multi-Arch Docker CI/CD & Release Channels**: Added `.github/workflows/docker.yml` publishing `linux/amd64` + `linux/arm64` images to `ghcr.io/zhangtyzzz/mcp-shelf` across `:alpha`, `:stable`, `:latest`, and SemVer tags, plus PR/Issue templates.
+
+### Fixed
+- Removed remaining inline `style` attributes in `ui/app.js` for zero CSP console warnings under `style-src 'self'`.
+
 ## [0.5.0] - 2026-11-27
 
 ### Added

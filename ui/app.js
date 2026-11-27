@@ -719,28 +719,63 @@ function logsView() {
 
   const rows = filtered.map((item) => {
     const [labelKey, cls] = logStatuses[item.status] || [item.status, ''];
+    const hasPayload = Boolean(item.argsPreview || item.resultPreview);
     return el(
       'article',
       { class: 'log-row' },
       el(
         'div',
-        { class: 'log-main' },
+        { class: 'log-row-head' },
         el(
           'div',
-          { class: 'log-title' },
-          pill(item.source === 'playground' ? t('log.source.playground') : t('log.source.agent')),
-          el('strong', { class: 'mono' }, item.action),
-          el('code', { class: 'sub' }, item.target)
+          { class: 'log-main' },
+          el(
+            'div',
+            { class: 'log-title' },
+            pill(item.source === 'playground' ? t('log.source.playground') : t('log.source.agent')),
+            el('strong', { class: 'mono' }, item.action),
+            el('code', { class: 'sub' }, item.target)
+          ),
+          item.detail ? el('div', { class: 'sub' }, item.detail) : null
         ),
-        item.detail ? el('div', { class: 'sub' }, item.detail) : null
+        el(
+          'div',
+          { class: 'log-meta' },
+          pill(t(labelKey), cls),
+          el('span', { class: 'mono' }, `${item.durationMs} ms`),
+          el('span', { class: 'mono' }, formatTime(item.at))
+        )
       ),
-      el(
-        'div',
-        { class: 'log-meta' },
-        pill(t(labelKey), cls),
-        el('span', { class: 'mono' }, `${item.durationMs} ms`),
-        el('span', { class: 'mono' }, formatTime(item.at))
-      )
+      hasPayload
+        ? el(
+            'details',
+            { class: 'log-details' },
+            el('summary', {}, t('logs.detailsToggle')),
+            item.argsPreview
+              ? el('div', {}, el('div', { class: 'sub' }, t('logs.argsLabel')), el('pre', { class: 'snippet' }, item.argsPreview))
+              : null,
+            item.resultPreview
+              ? el(
+                  'div',
+                  {},
+                  el('div', { class: 'sub' }, t('logs.resultLabel')),
+                  el('pre', { class: 'snippet' }, item.resultPreview)
+                )
+              : null,
+            item.action === 'call_tool' && item.argsPreview
+              ? btn(
+                  t('logs.replay'),
+                  () => {
+                    tryArgsCache.set(item.target, item.argsPreview);
+                    expandedTools.add(item.target);
+                    q = item.target;
+                    void switchView('tools');
+                  },
+                  'mini'
+                )
+              : null
+          )
+        : null
     );
   });
 
@@ -748,7 +783,7 @@ function logsView() {
     'select',
     {
       'aria-label': t('logs.filterAria'),
-      style: 'width:auto',
+      class: 'auto-select',
       on: {
         change: (e) => {
           logSourceFilter = e.target.value;
@@ -761,6 +796,59 @@ function logsView() {
     el('option', { value: 'playground' }, t('logs.onlyPlayground'))
   );
   sourceSelect.value = logSourceFilter;
+
+  const currentSettings = state.settings || { logLimit: 200, logDetails: false, idleMinutes: 10 };
+  const saveSetting = (e, patch) =>
+    run(e, () => request('settings', 'PUT', patch), t('toast.settingsSaved'));
+
+  const limitSelect = el(
+    'select',
+    {
+      class: 'auto-select',
+      'aria-label': t('logs.maxEntries'),
+      on: { change: (e) => saveSetting(e, { logLimit: Number(e.target.value) }) }
+    },
+    el('option', { value: '0' }, t('logs.disabled')),
+    el('option', { value: '50' }, '50'),
+    el('option', { value: '200' }, '200'),
+    el('option', { value: '500' }, '500'),
+    el('option', { value: '1000' }, '1000')
+  );
+  limitSelect.value = String(currentSettings.logLimit);
+
+  const idleSelect = el(
+    'select',
+    {
+      class: 'auto-select',
+      'aria-label': t('logs.idleLabel'),
+      on: { change: (e) => saveSetting(e, { idleMinutes: Number(e.target.value) }) }
+    },
+    el('option', { value: '0' }, t('logs.idleOff')),
+    el('option', { value: '5' }, t('logs.idleMin', { m: 5 })),
+    el('option', { value: '10' }, t('logs.idleMin', { m: 10 })),
+    el('option', { value: '30' }, t('logs.idleMin', { m: 30 })),
+    el('option', { value: '60' }, t('logs.idleMin', { m: 60 }))
+  );
+  idleSelect.value = String(currentSettings.idleMinutes);
+
+  const detailsCheck = el(
+    'label',
+    { class: 'check' },
+    el('input', {
+      type: 'checkbox',
+      checked: currentSettings.logDetails,
+      on: { change: (e) => saveSetting(e, { logDetails: e.target.checked }) }
+    }),
+    t('logs.recordDetails')
+  );
+
+  const settingsBar = el(
+    'div',
+    { class: 'settings-bar' },
+    el('label', { class: 'settings-field' }, t('logs.maxEntries'), limitSelect),
+    detailsCheck,
+    el('label', { class: 'settings-field' }, t('logs.idleLabel'), idleSelect)
+  );
 
   const autoCheck = el(
     'label',
@@ -791,6 +879,7 @@ function logsView() {
           : null
       )
     ),
+    settingsBar,
     panel(
       t('logs.panel'),
       actions(
@@ -946,7 +1035,7 @@ function clients() {
       state.mode === 'remote'
         ? el(
             'div',
-            { style: 'margin-top:12px' },
+            { class: 'token-controls' },
             actions(
               btn(
                 t('clients.showToken'),

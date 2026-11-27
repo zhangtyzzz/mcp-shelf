@@ -5,7 +5,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'mcp-shelf';
-export const APP_VERSION = '0.5.0';
+export const APP_VERSION = '0.6.0';
 export const DEFAULT_PORT = 8787;
 export const CLI_PATH = fileURLToPath(new URL('./main.mjs', import.meta.url));
 export const DEFAULT_DIR = () => path.join(os.homedir(), '.config', APP_NAME);
@@ -90,6 +90,27 @@ export const defaults = {
   call_tool:
     'Proxy-invoke one approved upstream tool behind MCP Shelf using { tool_id, arguments } where tool_id is the exact "server/tool" ID and arguments match the inputSchema returned by MCP Shelf search_tool. Never guess parameter names. Obtain needed user approval for writes and never blindly retry a failed write.'
 };
+
+export const defaultSettings = {
+  logLimit: 200,
+  logDetails: false,
+  idleMinutes: 10
+};
+
+export function normalizeSettings(v) {
+  if (v === undefined || v === null) return { ...defaultSettings };
+  if (!rec(v)) throw fail('Invalid settings object.');
+  const logLimit = v.logLimit === undefined ? defaultSettings.logLimit : Number(v.logLimit);
+  if (!Number.isInteger(logLimit) || logLimit < 0 || logLimit > 2000) {
+    throw fail('logLimit must be an integer between 0 and 2000.');
+  }
+  const idleMinutes = v.idleMinutes === undefined ? defaultSettings.idleMinutes : Number(v.idleMinutes);
+  if (!Number.isInteger(idleMinutes) || idleMinutes < 0 || idleMinutes > 1440) {
+    throw fail('idleMinutes must be an integer between 0 and 1440.');
+  }
+  const logDetails = v.logDetails === undefined ? defaultSettings.logDetails : Boolean(v.logDetails);
+  return { logLimit, logDetails, idleMinutes };
+}
 
 export function descriptions(v) {
   if (!rec(v)) throw fail('无效的描述设置');
@@ -178,7 +199,11 @@ export function openConfig(dir) {
   try {
     fs.writeFileSync(
       file,
-      JSON.stringify({ version: 1, token: token(), descriptions: defaults, servers: [] }, null, 2) + '\n',
+      JSON.stringify(
+        { version: 1, token: token(), descriptions: defaults, settings: defaultSettings, servers: [] },
+        null,
+        2
+      ) + '\n',
       { flag: 'wx', mode: 0o600 }
     );
   } catch (e) {
@@ -197,6 +222,7 @@ export function openConfig(dir) {
   let cfg = {
     ...raw,
     descriptions: descriptions(raw.descriptions),
+    settings: normalizeSettings(raw.settings),
     servers: raw.servers.map(source)
   };
   if (new Set(cfg.servers.map((s) => s.id)).size !== cfg.servers.length) {

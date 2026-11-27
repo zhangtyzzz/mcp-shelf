@@ -1,0 +1,27 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in MCP Shelf
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Clear description of the bug and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start MCP Shelf (local or Docker remote mode)
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      placeholder: "macOS 15 / Node 24 / Grok Build / Docker stable"
+    validations:
+      required: true

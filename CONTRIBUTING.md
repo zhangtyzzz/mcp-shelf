@@ -35,6 +35,24 @@ test/
   claude.mjs        # Claude Code CLI registration test
 ```
 
+## Branching, PRs & Release Channels
+
+MCP Shelf uses a clean two-channel release model backed by GitHub Actions + GHCR (`ghcr.io/zhangtyzzz/mcp-shelf`):
+
+| Branch / Tag | Purpose | Automated Docker Image Tags (`linux/amd64`, `linux/arm64`) |
+|---|---|---|
+| **`alpha`** | Active integration branch — **target all feature/fix PRs here** | `:alpha`, `:alpha-<sha>` |
+| **`stable`** | Production-ready branch (promoted from `alpha` after verification) | `:stable`, `:latest`, `:stable-<sha>` |
+| **`vX.Y.Z`** | Stable release tag (e.g. `v0.6.0`) | `:0.6.0`, `:0.6`, `:0`, `:stable`, `:latest` |
+| **`vX.Y.Z-alpha.N`** | Pre-release tag (e.g. `v0.7.0-alpha.1`) | `:0.7.0-alpha.1`, `:alpha` (never touches `:latest`) |
+| **Pull Requests** | CI runs protocol tests, Playwright UI E2E, and Docker build check | Build-only (not pushed) |
+
+### Typical Iteration Flow
+
+1. Fork & branch from `alpha`, implement changes, and open a PR targeting `alpha`.
+2. After CI passes and the PR merges into `alpha`, GHCR publishes `:alpha` automatically for dogfooding.
+3. When ready to release, fast-forward/merge `alpha` → `stable` (and sync `master`), bump `package.json` + `CHANGELOG.md`, and push a `vX.Y.Z` tag.
+
 ## Adding a New Language (i18n)
 
 1. Copy [ui/locales/en.js](ui/locales/en.js) to `ui/locales/<code>.js` (e.g. `ja.js`, `ko.js`, `de.js`, `fr.js`) and translate the values.

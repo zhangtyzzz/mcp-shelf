@@ -1,9 +1,22 @@
 name: Test
+
 on:
   push:
+    branches:
+      - alpha
+      - stable
+      - master
+    tags:
+      - 'v*.*.*'
   pull_request:
+    branches:
+      - alpha
+      - stable
+      - master
+
 permissions:
   contents: read
+
 jobs:
   protocol:
     strategy:
@@ -11,18 +24,19 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
       - run: npm ci
       - run: npm test
+
   ui:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm

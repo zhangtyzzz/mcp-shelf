@@ -16,6 +16,7 @@ import {
   fail,
   hostFromEnv,
   modeFromEnv,
+  normalizeSettings,
   openConfig,
   parseImportConfig,
   portFromEnv,
@@ -394,6 +395,7 @@ export async function launch({
           servers: cat.snapshot(),
           defaults,
           descriptions: cfg.get().descriptions,
+          settings: cfg.get().settings,
           meta: meta.map(({ name, title }) => ({ name, title })),
           logCount: cat.logs.length,
           fingerprint: cat.fingerprint(),
@@ -412,12 +414,20 @@ export async function launch({
       }
 
       if (method === 'GET' && route === '/api/logs') {
-        return json(200, { logs: cat.getLogs(200) });
+        const limit = cfg.get().settings?.logLimit ?? 200;
+        return json(200, { logs: limit > 0 ? cat.getLogs(limit) : [], settings: cfg.get().settings });
       }
 
       if (method === 'DELETE' && route === '/api/logs') {
         cat.clearLogs();
         return json(200, { ok: true });
+      }
+
+      if (method === 'PUT' && route === '/api/settings') {
+        const next = normalizeSettings({ ...cfg.get().settings, ...(await readBody(req)) });
+        cfg.save({ ...cfg.get(), settings: next });
+        cat.applySettings();
+        return json(200, { ok: true, settings: next });
       }
 
       if (method === 'GET' && route === '/api/export') {

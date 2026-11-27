@@ -112,7 +112,34 @@ function missingEnvKeysFor(s) {
   return [];
 }
 
-const MAX_LOGS = 200;
+const SENSITIVE_KEY = /token|secret|password|passwd|api[_-]?key|authorization|cookie|credential/i;
+const SEARCH_SCHEMA_BUDGET = 16_384;
+const BACKOFF_STEPS_MS = [30_000, 60_000, 120_000, 300_000];
+
+function redactValue(val, depth = 0) {
+  if (depth > 5) return '[…]';
+  if (val === null || val === undefined) return val;
+  if (typeof val === 'string') return val.length > 500 ? val.slice(0, 500) + '…' : val;
+  if (Array.isArray(val)) return val.slice(0, 20).map((x) => redactValue(x, depth + 1));
+  if (typeof val === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(val).slice(0, 40)) {
+      out[k] = SENSITIVE_KEY.test(k) ? '[REDACTED]' : redactValue(v, depth + 1);
+    }
+    return out;
+  }
+  return val;
+}
+
+function previewJson(val, maxChars = 4000) {
+  try {
+    const str = JSON.stringify(redactValue(val), null, 2);
+    if (!str) return '';
+    return str.length > maxChars ? str.slice(0, maxChars) + '\n… [truncated]' : str;
+  } catch {
+    return '[unserializable]';
+  }
+}
 
 export class Catalog {
   constructor(cfg) {
@@ -123,6 +150,30 @@ export class Catalog {
     this.logSeq = 0;
     this.listeners = new Set();
     this.lastFingerprint = this.fingerprint();
+    this.reaper = setInterval(() => this.evictIdle(), 60_000);
+    this.reaper.unref();
+  }
+
+  evictIdle() {
+    const idleMin = this.cfg.get().settings?.idleMinutes ?? 10;
+    if (!idleMin || idleMin <= 0) return;
+    const cutoff = Date.now() - idleMin * 60_000;
+    for (const s of this.cfg.get().servers) {
+      if (s.transport !== 'stdio') continue;
+      const r = this.states.get(s.id);
+      if (r && r.client && !r.pending && (r.lastUsed || r.at || 0) < cutoff) {
+        const c = r.client;
+        r.client = null;
+        r.hibernated = true;
+        void safeClose(c);
+      }
+    }
+  }
+
+  applySettings() {
+    const limit = this.cfg.get().settings?.logLimit ?? 200;
+    if (limit <= 0) this.logs.length = 0;
+    else if (this.logs.length > limit) this.logs.length = limit;
   }
 
   onChange(fn) {
@@ -160,37 +211,73 @@ export class Catalog {
   }
 
   /**
-   * Compact Grok-Build-style server summary listing enabled servers that have approved tools.
-   * Deliberately omits raw tool lists to keep prompt footprint tiny while letting agents know
-   * which integrations exist upfront.
+   * Compact Grok-Build-style server summary listing enabled servers that have approved tools,
+   * bounded by a strict character budget so large server counts never blow up tool descriptions.
    */
-  serverReminder() {
+  serverReminder(maxChars = 1400) {
     const active = this.cfg
       .get()
       .servers.filter((s) => s.enabled && s.allowlist.length > 0);
     if (!active.length) return '';
-    const lines = ['Connected MCP servers:'];
-    for (const s of active) {
+
+    const entries = active.map((s) => {
       const r = this.states.get(s.id);
-      const count = r?.status === 'ready'
-        ? r.tools.filter((t) => allowed(s, t)).length
-        : s.allowlist.length;
+      const count =
+        r?.status === 'ready' ? r.tools.filter((t) => allowed(s, t)).length : s.allowlist.length;
       const word = count === 1 ? 'tool' : 'tools';
-      const desc = cleanMsg(s.description || (s.label !== s.id ? s.label : ''), 160);
-      lines.push(desc ? `- ${s.id} (${count} ${word}): ${desc}` : `- ${s.id} (${count} ${word})`);
+      const desc = cleanMsg(s.description || (s.label !== s.id ? s.label : ''), 120);
+      return {
+        id: s.id,
+        count,
+        fullLine: desc ? `- ${s.id} (${count} ${word}): ${desc}` : `- ${s.id} (${count} ${word})`,
+        shortItem: `${s.id}(${count})`
+      };
+    });
+
+    const lines = ['Connected MCP servers:'];
+    let used = lines[0].length;
+    let shown = 0;
+    for (const item of entries) {
+      const reserve = shown < entries.length - 1 ? 48 : 0;
+      if (used + 1 + item.fullLine.length + reserve > maxChars) break;
+      lines.push(item.fullLine);
+      used += 1 + item.fullLine.length;
+      shown++;
     }
-    return lines.join('\n');
+    if (shown === entries.length) return lines.join('\n');
+
+    // If too many servers for multi-line descriptions, append a compact overflow summary
+    const remaining = entries.length - shown;
+    if (shown > 0) {
+      lines.push(`- (+${remaining} more servers; call list_mcps)`);
+      return lines.join('\n');
+    }
+
+    // Ultra-compact fallback when maxChars is very small
+    const compact = [];
+    let cLen = 'Connected MCP servers: '.length;
+    for (const item of entries) {
+      if (cLen + item.shortItem.length + 28 > maxChars) break;
+      compact.push(item.shortItem);
+      cLen += item.shortItem.length + 2;
+    }
+    const left = entries.length - compact.length;
+    return (
+      'Connected MCP servers: ' +
+      compact.join(', ') +
+      (left > 0 ? ` (+${left} more; call list_mcps)` : '')
+    );
   }
 
   metaInstructions() {
-    const reminder = this.serverReminder();
+    const reminder = this.serverReminder(1400);
     const usage =
       'Upstream tools behind MCP Shelf are proxied and NOT registered directly on the host. Always discover them with MCP Shelf `search_tool` and invoke them via MCP Shelf `call_tool({ tool_id, arguments })`. Never call `server/tool` or `server__tool` directly on the host.';
     return reminder ? `${reminder}\n\n${usage}` : usage;
   }
 
   metaTools(descs = this.cfg.get().descriptions) {
-    const reminder = this.serverReminder();
+    const reminder = this.serverReminder(480);
     return meta.map((t) => {
       const base = descs[t.name];
       const description = reminder ? `${base}\n\n${reminder}` : base;
@@ -199,18 +286,22 @@ export class Catalog {
   }
 
   record(entry) {
+    const limit = this.cfg.get().settings?.logLimit ?? 200;
+    if (limit <= 0) return;
     this.logs.unshift({
       id: ++this.logSeq,
       at: new Date().toISOString(),
       ...entry
     });
-    if (this.logs.length > MAX_LOGS) {
-      this.logs.length = MAX_LOGS;
+    if (this.logs.length > limit) {
+      this.logs.length = limit;
     }
   }
 
-  getLogs(limit = 100) {
-    return this.logs.slice(0, Math.min(Math.max(1, limit), MAX_LOGS));
+  getLogs(limit = 200) {
+    const cfgLimit = this.cfg.get().settings?.logLimit ?? 200;
+    const cap = Math.min(Math.max(1, limit), Math.max(1, cfgLimit));
+    return this.logs.slice(0, cap);
   }
 
   clearLogs() {
@@ -227,6 +318,7 @@ export class Catalog {
   }
 
   async close() {
+    clearInterval(this.reaper);
     await Promise.all(
       [...this.states.values()].map((r) => {
         r.invalid = true;
@@ -236,15 +328,36 @@ export class Catalog {
     this.states.clear();
   }
 
-  async refresh(s, force = false) {
+  async refresh(s, force = false, requireClient = false) {
     let r = this.states.get(s.id);
     if (r?.pending) return r.pending;
-    if (!force && r && Date.now() - r.at < 60_000) return r;
+    const now = Date.now();
+    if (!force && r) {
+      // Circuit-breaker cooldown after repeated failures (avoids blocking search on dead upstreams)
+      if (!requireClient && r.status === 'error' && r.cooldownUntil && now < r.cooldownUntil) {
+        return r;
+      }
+      // Fresh cache hit (if caller doesn't need an active client process, hibernated snapshot is valid)
+      if (now - r.at < 60_000 && (!requireClient || r.client)) {
+        r.lastUsed = now;
+        return r;
+      }
+      // Stale-while-revalidate: serve existing tool snapshot immediately while refreshing in background
+      if (!requireClient && r.status === 'ready' && r.tools.length > 0) {
+        r.lastUsed = now;
+        const state = r;
+        state.pending = this.load(s, state).finally(() => {
+          state.pending = null;
+        });
+        return r;
+      }
+    }
     if (!r) {
-      r = { tools: [], status: 'idle', at: 0 };
+      r = { tools: [], status: 'idle', at: 0, lastUsed: now, failures: 0, cooldownUntil: 0 };
       this.states.set(s.id, r);
     }
     const state = r;
+    state.lastUsed = now;
     state.pending = this.load(s, state).finally(() => {
       state.pending = null;
     });
@@ -349,11 +462,18 @@ export class Catalog {
       r.tools = tools;
       r.error = null;
       r.status = 'ready';
+      r.hibernated = false;
+      r.failures = 0;
+      r.cooldownUntil = 0;
     } catch (err) {
       const c = r.client;
       r.client = null;
       r.tools = [];
       r.status = 'error';
+      r.hibernated = false;
+      r.failures = (r.failures || 0) + 1;
+      const delay = BACKOFF_STEPS_MS[Math.min(r.failures - 1, BACKOFF_STEPS_MS.length - 1)];
+      r.cooldownUntil = Date.now() + delay;
       r.error = diagnoseConnectError(err, error, stderrTail);
       await safeClose(c);
     } finally {
@@ -488,9 +608,9 @@ export class Catalog {
     for (const [s, r] of rows) {
       for (const t of r?.tools || []) {
         if (!allowed(s, t)) continue;
-        const row = this.view(s, t, include_schema);
-        const n = norm(row.tool_id + ' ' + s.label);
-        const d = norm(row.description + ' ' + s.description);
+        const baseRow = this.view(s, t, false);
+        const n = norm(baseRow.tool_id + ' ' + s.label);
+        const d = norm(baseRow.description + ' ' + s.description);
         let score = terms.length
           ? terms.reduce((a, b) => a + (n.includes(b) ? 8 : d.includes(b) ? 3 : 0), 0) +
             (n.includes(q) ? 10 : 0)
@@ -498,16 +618,40 @@ export class Catalog {
         if (score === 0 && cjkBigrams.length) {
           score = cjkBigrams.reduce((a, b) => a + (n.includes(b) ? 2 : d.includes(b) ? 1 : 0), 0);
         }
-        if (score) ranked.push({ row, score });
+        if (score) ranked.push({ s, t, baseRow, score });
       }
     }
-    ranked.sort((a, b) => b.score - a.score || a.row.tool_id.localeCompare(b.row.tool_id, 'en'));
-    const matches = ranked.slice(offset, offset + limit).map((x) => x.row);
+    ranked.sort((a, b) => b.score - a.score || a.baseRow.tool_id.localeCompare(b.baseRow.tool_id, 'en'));
+
+    // Enforce a response schema byte budget so large upstream schemas don't bloat context
+    let schemaBytes = 0;
+    let schemasOmitted = 0;
+    const matches = ranked.slice(offset, offset + limit).map(({ s, t, baseRow }) => {
+      if (!include_schema) return baseRow;
+      const detailed = this.view(s, t, true);
+      const cost = jsz(detailed.inputSchema) + (detailed.outputSchema ? jsz(detailed.outputSchema) : 0);
+      if (schemaBytes === 0 || schemaBytes + cost <= SEARCH_SCHEMA_BUDGET) {
+        schemaBytes += cost;
+        return detailed;
+      }
+      schemasOmitted++;
+      return {
+        ...baseRow,
+        schema_omitted: true,
+        required_params: Array.isArray(t.inputSchema?.required) ? t.inputSchema.required : []
+      };
+    });
+
     const out = {
       matches,
       total: ranked.length,
       next_offset: offset + limit < ranked.length ? offset + limit : null,
       unavailable_servers: rows.filter(([, r]) => r?.status === 'error').map(([s]) => s.id),
+      ...(schemasOmitted > 0
+        ? {
+            schema_budget_note: `${schemasOmitted} result(s) omitted full inputSchema to stay within the 16 KB context budget; call search_tool with exact tool_id to fetch.`
+          }
+        : {}),
       ...(matches.length
         ? {
             how_to_call: `Invoke matched tools through MCP Shelf call_tool with {"tool_id":"${matches[0].tool_id}","arguments":{...}}. Upstream tool_ids are proxied and cannot be called directly as host tools.`
@@ -520,7 +664,7 @@ export class Catalog {
       target: query || server_id || '*',
       status: 'ok',
       durationMs: Date.now() - start,
-      detail: `${out.total} 条匹配${include_schema ? '（含 Schema）' : ''}`
+      detail: `${out.total} matches${include_schema ? ' (with schema)' : ''}`
     });
     return out;
   }
@@ -552,9 +696,11 @@ export class Catalog {
       });
       return answer('Gateway capacity reached.', true);
     }
+    const withDetails = () => this.cfg.get().settings?.logDetails === true;
+    const argsPreview = withDetails() ? previewJson(a) : undefined;
     this.calls++;
     try {
-      const r = await this.refresh(s);
+      const r = await this.refresh(s, false, true);
       const curr = entry();
       if (
         !curr?.enabled ||
@@ -569,7 +715,8 @@ export class Catalog {
           target: tool_id,
           status: 'blocked',
           durationMs: Date.now() - start,
-          detail: r.error || '上游连接不可用或授权已变更'
+          detail: r.error || 'Upstream unavailable or approval changed',
+          ...(argsPreview ? { argsPreview } : {})
         });
         return blocked();
       }
@@ -581,7 +728,8 @@ export class Catalog {
           target: tool_id,
           status: 'blocked',
           durationMs: Date.now() - start,
-          detail: '上游目录中无此工具'
+          detail: 'Tool not found in upstream catalog',
+          ...(argsPreview ? { argsPreview } : {})
         });
         return blocked();
       }
@@ -597,7 +745,8 @@ export class Catalog {
             target: tool_id,
             status: 'invalid',
             durationMs: Date.now() - start,
-            detail: cleanMsg(reason, 140)
+            detail: cleanMsg(reason, 140),
+            ...(argsPreview ? { argsPreview } : {})
           });
           return answer(reason, true);
         }
@@ -608,11 +757,12 @@ export class Catalog {
           target: tool_id,
           status: 'error',
           durationMs: Date.now() - start,
-          detail: '无法编译上游 inputSchema'
+          detail: 'Could not compile upstream inputSchema'
         });
         return answer('Could not validate upstream input schema. Call was not forwarded.', true);
       }
       const result = await r.client.callTool({ name: n, arguments: a }, undefined, { signal, timeout: 30_000 });
+      r.lastUsed = Date.now();
       if (jsz(result) > 512_000) {
         this.record({
           source,
@@ -620,7 +770,8 @@ export class Catalog {
           target: tool_id,
           status: 'error',
           durationMs: Date.now() - start,
-          detail: '回包超过 512 KB 上限'
+          detail: 'Output exceeded 512 KB limit',
+          ...(argsPreview ? { argsPreview } : {})
         });
         return answer('Output exceeded 512 KB. Upstream was called; verify state before retrying.', true);
       }
@@ -630,7 +781,9 @@ export class Catalog {
         target: tool_id,
         status: result.isError ? 'upstream_error' : 'ok',
         durationMs: Date.now() - start,
-        detail: result.isError ? '上游返回 isError' : '调用成功'
+        detail: result.isError ? 'Upstream returned isError' : 'OK',
+        ...(argsPreview ? { argsPreview } : {}),
+        ...(withDetails() ? { resultPreview: previewJson(result.structuredContent ?? result.content ?? result) } : {})
       });
       return result;
     } catch (err) {
@@ -641,7 +794,8 @@ export class Catalog {
         target: tool_id,
         status: 'error',
         durationMs: Date.now() - start,
-        detail: reason || '上游调用失败或超时'
+        detail: reason || 'Upstream call failed or timed out',
+        ...(argsPreview ? { argsPreview } : {})
       });
       const suffix = reason ? ` (${reason})` : '';
       return answer(

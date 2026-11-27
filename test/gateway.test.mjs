@@ -333,3 +333,95 @@ test('remote mode enforces admin password, HttpOnly signed session cookie, and M
  await c.connect(httpClient(app.url + '/mcp', { Authorization: 'Bearer ' + newTok }));
  assert.equal((await c.listTools()).tools.length, 3);
 });
+
+test('context budgets (serverReminder & search schema cap), configurable log retention/redaction, and idle settings', async t => {
+ const f = await fixture(t);
+
+ // 1. Add 15 servers with long descriptions and verify serverReminder stays strictly within budget
+ for (let i = 0; i < 15; i++) {
+  await f.api('servers', 'POST', {
+   id: `srv-${i}`,
+   label: `Service ${i}`,
+   description: `Long description for upstream service number ${i} `.repeat(3),
+   transport: 'http',
+   url: `https://example-${i}.com/mcp`,
+   enabled: true,
+   allowlist: ['tool_a', 'tool_b']
+  }, 201);
+ }
+ const c = await f.bridge();
+ const listed = await c.listTools();
+ // Meta-tool descriptions stay compact even with 15 servers
+ assert.ok(listed.tools[1].description.length < 1100);
+ assert.match(listed.tools[1].description, /\+\d+ more/);
+
+ // 2. Configurable logLimit, logDetails redaction, and idleMinutes persistence
+ await f.api('servers', 'POST', demoSource(['echo']), 201);
+ await f.api('settings', 'PUT', { logLimit: 2, logDetails: true, idleMinutes: 5 });
+ const stAfter = await f.get();
+ assert.deepEqual(stAfter.settings, { logLimit: 2, logDetails: true, idleMinutes: 5 });
+
+ await call(c, 'call_tool', {
+  tool_id: 'demo/echo',
+  arguments: { text: 'hello' }
+ });
+ // Trigger an invalid call containing a sensitive key to verify redaction
+ await call(c, 'call_tool', {
+  tool_id: 'demo/echo',
+  arguments: { text: 'x', apiKey: 'sk-live-secret-999' }
+ });
+ await data(c, 'list_mcps');
+
+ const logRes = await (await fetch(f.app.url + '/api/logs')).json();
+ // Enforces logLimit = 2
+ assert.equal(logRes.logs.length, 2);
+ const invalidLog = logRes.logs.find(l => l.status === 'invalid');
+ assert.ok(invalidLog?.argsPreview);
+ assert.equal(invalidLog.argsPreview.includes('sk-live-secret-999'), false);
+ assert.match(invalidLog.argsPreview, /\[REDACTED\]/);
+
+ // Disabling logs (logLimit = 0) clears and stops recording
+ await f.api('settings', 'PUT', { logLimit: 0 });
+ await data(c, 'list_mcps');
+ const emptyLogs = await (await fetch(f.app.url + '/api/logs')).json();
+ assert.equal(emptyLogs.logs.length, 0);
+
+ // 3. Large upstream schemas obey the 16 KB search_tool response budget
+ const bigSchema = {
+  type: 'object',
+  properties: Object.fromEntries(
+   Array.from({ length: 120 }, (_, i) => [`field_${i}`, { type: 'string', description: 'D'.repeat(80) }])
+  ),
+  required: ['field_0']
+ };
+ const bigUpstream = http.createServer(async (req, res) => {
+  const s = createMcp(
+   () => ({
+    tools: [
+     { name: 'big_one', description: 'alpha large schema tool', inputSchema: bigSchema },
+     { name: 'big_two', description: 'alpha second large schema tool', inputSchema: bigSchema }
+    ]
+   }),
+   () => ({ content: [{ type: 'text', text: 'ok' }] })
+  );
+  const tr = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  await s.connect(tr);
+  res.once('close', () => void s.close());
+  await tr.handleRequest(req, res);
+ });
+ await new Promise(r => bigUpstream.listen(0, '127.0.0.1', r));
+ t.after(() => { bigUpstream.closeAllConnections(); bigUpstream.close(); });
+ await f.api('servers', 'POST', {
+  id: 'big',
+  transport: 'http',
+  url: 'http://127.0.0.1:' + bigUpstream.address().port + '/mcp',
+  enabled: true,
+  allowlist: ['big_one', 'big_two']
+ }, 201);
+ const budgeted = await data(c, 'search_tool', { server_id: 'big', query: 'alpha' });
+ assert.equal(budgeted.matches.length, 2);
+ assert.ok(budgeted.matches[0].inputSchema, 'first match keeps full schema');
+ assert.equal(budgeted.matches[1].schema_omitted, true, 'second match degrades when exceeding 16 KB budget');
+ assert.deepEqual(budgeted.matches[1].required_params, ['field_0']);
+ assert.match(budgeted.schema_budget_note || '', /16 KB/);
+});
