@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import { createHmac, scryptSync } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import {
   APP_VERSION,
@@ -32,6 +33,7 @@ import {
 } from './config.mjs';
 import { answer, Catalog, checks, createMcp, meta, safeClose } from './catalog.mjs';
 import { OAuthStore } from './oauth.mjs';
+import { ShelfOAuthServer } from './oauth_server.mjs';
 import { TaskManager } from './tasks.mjs';
 
 const security = {
@@ -193,6 +195,8 @@ export async function launch({
   const csrf = token();
   const startedAt = Date.now();
   const auth = isRemote ? createAuth(cfg, adminPassword) : null;
+  const oauthServer = new ShelfOAuthServer({ cfg, auth, isRemote });
+  const sseSessions = new Map();
   const publicHost = publicUrl ? new URL(publicUrl).host : '';
 
   const resolveAccess = (authHeader, expectedProfileId = null) => {
@@ -200,13 +204,54 @@ export async function launch({
     if (!raw.startsWith('Bearer ')) return null;
     const tok = raw.slice(7);
     if (!expectedProfileId && same(tok, cfg.get().token)) {
-      return { profile: null };
+      return { profile: null, rawToken: tok };
     }
     for (const pr of cfg.get().profiles || []) {
       if (expectedProfileId && pr.id !== expectedProfileId) continue;
-      if (same(tok, pr.token)) return { profile: pr };
+      if (same(tok, pr.token)) return { profile: pr, rawToken: tok };
+    }
+    const oauthHit = oauthServer.resolveToken(tok);
+    if (oauthHit) {
+      if (expectedProfileId && oauthHit.profile?.id !== expectedProfileId) return null;
+      return { profile: oauthHit.profile, rawToken: tok };
     }
     return null;
+  };
+
+  const buildMcpServer = (activeProfile) => {
+    const profileId = activeProfile?.id || null;
+    return createMcp(
+      () => ({ tools: cat.metaTools(cfg.get().descriptions, activeProfile) }),
+      async (params, extra) => {
+        const { name, arguments: a = {}, task: taskParams } = params;
+        const validate = checks.get(name);
+        if (!validate?.(a)) {
+          throw new McpError(ErrorCode.InvalidParams, 'Unknown meta-tool or invalid arguments.');
+        }
+        if (name === 'list_mcps') return answer(await cat.list(a, activeProfile));
+        if (name === 'search_tool') return answer(await cat.search(a, activeProfile));
+        if (taskParams && typeof taskParams === 'object') {
+          const created = tasks.start({
+            toolId: a.tool_id,
+            profileId,
+            ttl: taskParams.ttl,
+            run: (signal) => cat.call(a, { signal }, activeProfile, 300_000)
+          });
+          return { task: created };
+        }
+        return cat.call(a, extra, activeProfile);
+      },
+      {
+        instructions: cat.metaInstructions(activeProfile),
+        listChanged: true,
+        taskHandlers: {
+          get: (id) => tasks.get(id, profileId),
+          result: (id, signal) => tasks.result(id, profileId, signal),
+          list: () => tasks.list(profileId),
+          cancel: (id) => tasks.cancel(id, profileId)
+        }
+      }
+    );
   };
 
   if (demo && !cfg.get().servers.some((s) => s.id === 'demo')) {
@@ -324,55 +369,110 @@ export async function launch({
         return;
       }
 
+      const reqOrigin = publicUrl || `${isHttpsReq(req) ? 'https' : 'http'}://${h}`;
+
+      // MCP Shelf's own OAuth 2.1 + PKCE Server endpoints (RFC 9728, RFC 8414, RFC 7591)
+      if (method === 'GET' && route.startsWith('/.well-known/oauth-protected-resource')) {
+        const suffix = route.slice('/.well-known/oauth-protected-resource'.length) || '/mcp';
+        return json(200, oauthServer.protectedResourceMetadata(reqOrigin, suffix));
+      }
+      if (method === 'GET' && route === '/.well-known/oauth-authorization-server') {
+        return json(200, oauthServer.authorizationServerMetadata(reqOrigin));
+      }
+      if (method === 'POST' && route === '/oauth/register') {
+        return json(201, await oauthServer.handleRegister(req));
+      }
+      if (method === 'GET' && route === '/oauth/authorize') {
+        const html = oauthServer.renderAuthorizePage(req, new URL(req.url, 'http://' + h));
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+      if (method === 'POST' && route === '/oauth/authorize') {
+        const result = await oauthServer.handleAuthorizeSubmit(req);
+        if (result.invalidPassword) {
+          const retryUrl = new URL('/oauth/authorize', 'http://' + h);
+          retryUrl.searchParams.set('client_id', result.flow.clientId);
+          retryUrl.searchParams.set('redirect_uri', result.flow.redirectUri);
+          retryUrl.searchParams.set('response_type', 'code');
+          retryUrl.searchParams.set('code_challenge', result.flow.codeChallenge);
+          retryUrl.searchParams.set('code_challenge_method', 'S256');
+          if (result.flow.state) retryUrl.searchParams.set('state', result.flow.state);
+          const html = oauthServer.renderAuthorizePage(req, retryUrl, 'Invalid admin password.');
+          res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end(html);
+        }
+        res.writeHead(302, { Location: result.redirect });
+        return res.end();
+      }
+      if (method === 'POST' && route === '/oauth/token') {
+        return json(200, await oauthServer.handleToken(req));
+      }
+
+      // Legacy SSE MCP transport (GET /sse or /sse/<profile_id> + POST /messages?sessionId=...)
+      const sseMatch = /^\/sse(?:\/([a-z][a-z0-9_-]{0,47}))?$/.exec(route);
+      if (sseMatch) {
+        const expectedProfileId = sseMatch[1] || null;
+        const access = resolveAccess(req.headers.authorization, expectedProfileId);
+        if (!access) {
+          res.setHeader(
+            'WWW-Authenticate',
+            `Bearer resource_metadata="${reqOrigin}/.well-known/oauth-protected-resource${route}"`
+          );
+          return json(401, { error: 'Bearer token required.' });
+        }
+        if (method !== 'GET') {
+          res.setHeader('Allow', 'GET');
+          return json(405, { error: 'Use GET for SSE stream.' });
+        }
+        req.setTimeout(0);
+        res.setTimeout(0);
+        const tr = new SSEServerTransport('/messages', res);
+        const mcp = buildMcpServer(access.profile);
+        sseSessions.set(tr.sessionId, { transport: tr, mcp, token: access.rawToken });
+        const unsub = cat.onChange(() => {
+          void mcp.sendToolListChanged().catch(() => {});
+        });
+        res.once('close', () => {
+          unsub();
+          sseSessions.delete(tr.sessionId);
+          void safeClose(mcp);
+        });
+        await mcp.connect(tr);
+        return;
+      }
+
+      if (route === '/messages' && method === 'POST') {
+        const sessionId = new URL(req.url, 'http://' + h).searchParams.get('sessionId') || '';
+        const sess = sseSessions.get(sessionId);
+        if (!sess) return json(404, { error: 'Unknown SSE session.' });
+        const authHdr = String(req.headers.authorization || '');
+        if (!authHdr.startsWith('Bearer ') || !same(authHdr.slice(7), sess.token)) {
+          res.setHeader('WWW-Authenticate', 'Bearer');
+          return json(401, { error: 'Bearer token mismatch.' });
+        }
+        const payload = await readBody(req);
+        await sess.transport.handlePostMessage(req, res, payload);
+        return;
+      }
+
       // MCP Streamable HTTP endpoint (supports /mcp and profile-scoped /mcp/<profile_id>)
       const mcpMatch = /^\/mcp(?:\/([a-z][a-z0-9_-]{0,47}))?$/.exec(route);
       if (mcpMatch) {
         const expectedProfileId = mcpMatch[1] || null;
         const access = resolveAccess(req.headers.authorization, expectedProfileId);
         if (!access) {
-          res.setHeader('WWW-Authenticate', 'Bearer');
+          res.setHeader(
+            'WWW-Authenticate',
+            `Bearer resource_metadata="${reqOrigin}/.well-known/oauth-protected-resource${route}"`
+          );
           return json(401, { error: 'Bearer token required.' });
         }
         if (method !== 'POST') {
           res.setHeader('Allow', 'POST');
           return json(405, { error: 'Use Streamable HTTP POST.' });
         }
-        const activeProfile = access.profile;
-        const profileId = activeProfile?.id || null;
         const request = await readBody(req);
-        const mcp = createMcp(
-          () => ({ tools: cat.metaTools(cfg.get().descriptions, activeProfile) }),
-          async (params, extra) => {
-            const { name, arguments: a = {}, task: taskParams } = params;
-            const validate = checks.get(name);
-            if (!validate?.(a)) {
-              throw new McpError(ErrorCode.InvalidParams, 'Unknown meta-tool or invalid arguments.');
-            }
-            if (name === 'list_mcps') return answer(await cat.list(a, activeProfile));
-            if (name === 'search_tool') return answer(await cat.search(a, activeProfile));
-            // Support MCP 2025-11-25 async task-augmented call_tool requests
-            if (taskParams && typeof taskParams === 'object') {
-              const created = tasks.start({
-                toolId: a.tool_id,
-                profileId,
-                ttl: taskParams.ttl,
-                run: (signal) => cat.call(a, { signal }, activeProfile, 300_000)
-              });
-              return { task: created };
-            }
-            return cat.call(a, extra, activeProfile);
-          },
-          {
-            instructions: cat.metaInstructions(activeProfile),
-            listChanged: true,
-            taskHandlers: {
-              get: (id) => tasks.get(id, profileId),
-              result: (id, signal) => tasks.result(id, profileId, signal),
-              list: () => tasks.list(profileId),
-              cancel: (id) => tasks.cancel(id, profileId)
-            }
-          }
-        );
+        const mcp = buildMcpServer(access.profile);
         const tr = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
           enableJsonResponse: true
@@ -756,6 +856,8 @@ export async function launch({
     url: 'http://' + displayHost + ':' + server.address().port,
     close: async () => {
       const p = new Promise((r) => server.close(r));
+      for (const s of sseSessions.values()) void safeClose(s.mcp);
+      sseSessions.clear();
       server.closeAllConnections();
       tasks.close();
       await cat.close();

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-11-27
+
+### Added
+- **Built-in OAuth 2.1 + PKCE Authorization Server** (`src/oauth_server.mjs`): Implements RFC 9728 Protected Resource Metadata, RFC 8414 Authorization Server Metadata, RFC 7591 Dynamic Client Registration, and S256 PKCE authorization with optional Access Profile scope selection — allowing OAuth-capable MCP clients to connect without copying Bearer tokens manually.
+- **Legacy SSE Transport Compatibility**: Added `GET /sse` (`/sse/<profile_id>`) + `POST /messages` using official SDK `SSEServerTransport` with per-session Bearer/OAuth verification and live `tools/list_changed` notifications.
+- **Expanded Modular Test Suite**: Added `test/transports.test.mjs` covering full OAuth 2.1 + PKCE server flows, Legacy SSE end-to-end calls, and profile isolation.
+
 ## [0.7.0] - 2026-11-27
 
 ### Added

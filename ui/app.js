@@ -1251,6 +1251,7 @@ function clients() {
     profileRows.length ? profileRows : el('div', { class: 'inside' }, el('p', { class: 'sub' }, t('profiles.empty')))
   );
 
+  const sseUrl = remoteUrl.replace(/\/mcp$/, '/sse');
   return [
     hero(t('clients.kicker'), t('clients.title'), t('clients.sub')),
     el(
@@ -1258,6 +1259,11 @@ function clients() {
       { class: 'stack' },
       tokenPanel,
       profilesPanel,
+      snippet(
+        t('clients.oauthTitle'),
+        t('clients.oauthDesc'),
+        `grok mcp add --transport http mcp_shelf ${quote(remoteUrl)}`
+      ),
       ...remoteSnippets,
       snippet(t('clients.grokTitle'), t('clients.grokDesc'), gr),
       snippet(t('clients.codexTitle'), t('clients.codexDesc'), toml),
@@ -1271,6 +1277,11 @@ function clients() {
         t('clients.localHttpTitle'),
         t('clients.localHttpDesc'),
         'http://127.0.0.1:' + state.port + '/mcp\nAuthorization: Bearer <LOCAL_CONFIG_TOKEN>'
+      ),
+      snippet(
+        t('clients.sseTitle'),
+        t('clients.sseDesc'),
+        sseUrl + '\nAuthorization: Bearer <MCP_SHELF_TOKEN>'
       )
     )
   ];
