@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fail, rec, same, token } from './config.mjs';
 
@@ -37,6 +39,10 @@ function s256(verifier) {
   return createHash('sha256').update(verifier).digest('base64url');
 }
 
+function hashToken(raw) {
+  return createHash('sha256').update(String(raw || '')).digest('hex');
+}
+
 async function readFormOrJson(req) {
   const chunks = [];
   let size = 0;
@@ -64,21 +70,78 @@ async function readFormOrJson(req) {
  * to authenticate against MCP Shelf without manually copying Bearer tokens.
  */
 export class ShelfOAuthServer {
-  constructor({ cfg, auth, isRemote }) {
+  constructor({ cfg, auth, isRemote, dir = null }) {
     this.cfg = cfg;
     this.auth = auth;
     this.isRemote = isRemote;
+    this.storePath = dir ? path.join(dir, 'oauth', 'server.json') : null;
     this.clients = new Map();
     this.forms = new Map();
     this.codes = new Map();
+    // Map<sha256(accessToken), { clientId, profileId, exp }>
     this.tokens = new Map();
+    this._load();
+  }
+
+  _load() {
+    if (!this.storePath || !fs.existsSync(this.storePath)) return;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.storePath, 'utf8'));
+      const now = Date.now();
+      if (rec(raw.clients)) {
+        for (const [id, c] of Object.entries(raw.clients)) {
+          if (rec(c) && typeof c.client_id === 'string' && Array.isArray(c.redirect_uris)) {
+            this.clients.set(id, c);
+          }
+        }
+      }
+      if (rec(raw.tokens)) {
+        for (const [h, t] of Object.entries(raw.tokens)) {
+          if (rec(t) && typeof t.exp === 'number' && t.exp > now) {
+            this.tokens.set(h, {
+              clientId: String(t.clientId || ''),
+              profileId: typeof t.profileId === 'string' ? t.profileId : null,
+              exp: t.exp
+            });
+          }
+        }
+      }
+    } catch {
+      // Ignore corrupt/unreadable state file and start clean
+    }
+  }
+
+  _save() {
+    if (!this.storePath) return;
+    const now = Date.now();
+    for (const [h, t] of this.tokens) {
+      if (t.exp <= now) this.tokens.delete(h);
+    }
+    const dir = path.dirname(this.storePath);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const tmp = `${this.storePath}.${process.pid}.${Date.now()}.tmp`;
+    const payload = JSON.stringify(
+      {
+        version: 1,
+        clients: Object.fromEntries(this.clients),
+        tokens: Object.fromEntries(this.tokens)
+      },
+      null,
+      2
+    );
+    fs.writeFileSync(tmp, payload + '\n', { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, this.storePath);
   }
 
   resolveToken(rawToken) {
-    const recEntry = this.tokens.get(rawToken);
+    if (typeof rawToken !== 'string' || !rawToken) return null;
+    const h = hashToken(rawToken);
+    const recEntry = this.tokens.get(h);
     if (!recEntry) return null;
     if (Date.now() > recEntry.exp) {
-      this.tokens.delete(rawToken);
+      this.tokens.delete(h);
+      this._save();
       return null;
     }
     if (!recEntry.profileId) return { profile: null };
@@ -130,6 +193,7 @@ export class ShelfOAuthServer {
       client_id_issued_at: Math.floor(Date.now() / 1000)
     };
     this.clients.set(clientId, client);
+    this._save();
     return client;
   }
 
@@ -282,11 +346,12 @@ export class ShelfOAuthServer {
       this.tokens.delete(this.tokens.keys().next().value);
     }
     const accessToken = token();
-    this.tokens.set(accessToken, {
+    this.tokens.set(hashToken(accessToken), {
       clientId,
       profileId: recCode.profileId,
       exp: Date.now() + TOKEN_TTL_MS
     });
+    this._save();
 
     return {
       access_token: accessToken,

@@ -194,7 +194,7 @@ export async function launch({
   const csrf = token();
   const startedAt = Date.now();
   const auth = isRemote ? createAuth(cfg, adminPassword) : null;
-  const oauthServer = new ShelfOAuthServer({ cfg, auth, isRemote });
+  const oauthServer = new ShelfOAuthServer({ cfg, auth, isRemote, dir });
   const publicHost = publicUrl ? new URL(publicUrl).host : '';
   const publicOrigin = publicUrl ? new URL(publicUrl).origin : '';
 

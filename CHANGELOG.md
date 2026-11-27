@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.1] - 2026-11-27
+
+### Added
+- **Persistent OAuth 2.1 Server Store**: Dynamically registered OAuth clients and issued access tokens are now persisted atomically to `<MCP_SHELF_HOME>/oauth/server.json` (`0600`) with tokens stored strictly as SHA-256 hashes (never plaintext), so connected OAuth MCP clients stay authenticated across container and server restarts.
+
+### Fixed
+- **Reverse-Proxy Origin & Host Handling**: Remote mode now accepts `MCP_SHELF_PUBLIC_URL`'s origin and valid `X-Forwarded-Host` headers when reverse proxies (Caddy, Nginx, Cloudflare Tunnel, Instabox) rewrite `Host` to loopback (`127.0.0.1`).
+- **Docker Compose Default**: Left `MCP_SHELF_PUBLIC_URL` empty by default in `docker-compose.yml` to prevent unintended `403 Host not allowed` or `Secure` cookie mismatches during plain-HTTP/IP testing.
+
 ## [0.8.0] - 2026-11-27
 
 ### Added

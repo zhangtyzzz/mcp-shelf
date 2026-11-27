@@ -180,6 +180,34 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
     })
   ).structuredContent;
   assert.deepEqual(echoed, { echo: 'oauth-works' });
+  await mcpClient.close();
+
+  // 7. Persisted OAuth clients & SHA-256-hashed tokens survive full server restart
+  const storePath = path.join(dir, 'oauth', 'server.json');
+  assert.equal(fs.statSync(storePath).mode & 0o777, 0o600);
+  const rawStore = fs.readFileSync(storePath, 'utf8');
+  assert.ok(!rawStore.includes(tokData.access_token), 'raw access_token must not be stored in plaintext');
+
+  await app.close();
+  const restarted = await launch({
+    dir,
+    port: 0,
+    mode: 'remote',
+    host: '127.0.0.1',
+    adminPassword: 'super-strong-admin-pass-123'
+  });
+  t.after(() => restarted.close());
+
+  const mcpAfterRestart = new Client({ name: 'oauth-mcp-client-restarted', version: '1' });
+  t.after(() => mcpAfterRestart.close());
+  await mcpAfterRestart.connect(httpClient(restarted.url + '/mcp', { Authorization: 'Bearer ' + tokData.access_token }));
+  const echoedAfter = (
+    await mcpAfterRestart.callTool({
+      name: 'call_tool',
+      arguments: { tool_id: 'demo/echo', arguments: { text: 'survived-restart' } }
+    })
+  ).structuredContent;
+  assert.deepEqual(echoedAfter, { echo: 'survived-restart' });
 });
 
 test('Remote mode behind HTTPS reverse proxy (Host, Origin, X-Forwarded-Proto, Secure cookie, OAuth metadata)', async (t) => {
