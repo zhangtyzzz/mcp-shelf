@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { launch, httpClient, demoSource } from '../src/main.mjs';
 
 test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password check, PKCE verify, scoped token)', async (t) => {
@@ -181,37 +180,4 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
     })
   ).structuredContent;
   assert.deepEqual(echoed, { echo: 'oauth-works' });
-});
-
-test('Legacy SSE transport (GET /sse + POST /messages) with Bearer auth and profile isolation', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelf-sse-'));
-  const app = await launch({ dir, port: 0, demo: true });
-  t.after(async () => {
-    await app.close();
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  // Unauthenticated /sse returns 401 with OAuth resource_metadata
-  const unauth = await fetch(app.url + '/sse');
-  assert.equal(unauth.status, 401);
-  assert.match(unauth.headers.get('www-authenticate') || '', /resource_metadata=/);
-
-  const authHeaders = { Authorization: 'Bearer ' + app.config.get().token };
-  const sseTransport = new SSEClientTransport(new URL(app.url + '/sse'), {
-    requestInit: { headers: authHeaders },
-    eventSourceInit: {
-      fetch: (url, init) => fetch(url, { ...init, headers: { ...(init?.headers || {}), ...authHeaders } })
-    }
-  });
-  const c = new Client({ name: 'legacy-sse-client', version: '1' });
-  t.after(() => c.close());
-  await c.connect(sseTransport);
-
-  const tools = await c.listTools();
-  assert.deepEqual(tools.tools.map((x) => x.name), ['list_mcps', 'search_tool', 'call_tool']);
-  const res = await c.callTool({
-    name: 'call_tool',
-    arguments: { tool_id: 'demo/add', arguments: { a: 19, b: 23 } }
-  });
-  assert.deepEqual(res.structuredContent, { sum: 42 });
 });

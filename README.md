@@ -52,7 +52,7 @@ npm start
 Open **http://127.0.0.1:8787**:
 1. In **Connections**, click **Templates** to one-click add classic servers (like free **Exa Search**, **Context7 Docs**, **Sequential Thinking**, or **GitHub OAuth**), or click **Import** to paste existing `mcpServers` JSON / Codex `config.toml`.
 2. Click **Fetch Tools**, review and approve tools in **Tool Catalog**, and test them directly in the built-in **Playground**.
-3. Open **Connect Agents** to pick your transport mode (**Local stdio**, **OAuth 2.1**, **Streamable HTTP**, or **Legacy SSE**) and client, then copy the generated snippet.
+3. Open **Connect Agents** to pick your transport mode (**Local stdio**, **OAuth 2.1**, or **Streamable HTTP**) and client, then copy the generated snippet.
 
 Optional global CLI link:
 

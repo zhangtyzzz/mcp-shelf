@@ -1253,21 +1253,18 @@ function clients() {
     profileRows.length ? profileRows : el('div', { class: 'inside' }, el('p', { class: 'sub' }, t('profiles.empty')))
   );
 
-  const sseUrl = remoteUrl.replace(/\/mcp$/, '/sse');
   const activeMode = clientMode || (state.mode === 'remote' ? 'oauth' : 'stdio');
 
   const modes = [
     { id: 'stdio', label: t('clients.mode.stdio') },
     { id: 'oauth', label: t('clients.mode.oauth') },
-    { id: 'http', label: t('clients.mode.http') },
-    { id: 'sse', label: t('clients.mode.sse') }
+    { id: 'http', label: t('clients.mode.http') }
   ];
 
   const agentsByMode = {
     stdio: ['grok', 'codex', 'claude', 'agy'],
     oauth: ['grok', 'claude', 'generic'],
-    http: ['grok', 'claude', 'codex', 'agy', 'generic'],
-    sse: ['generic', 'claude', 'agy']
+    http: ['grok', 'claude', 'codex', 'agy', 'generic']
   };
 
   const allowedAgents = agentsByMode[activeMode] || ['generic'];
@@ -1342,34 +1339,7 @@ function clients() {
         code: `${remoteUrl}\nAuthorization: Bearer <MCP_SHELF_TOKEN>`
       };
     }
-    // Legacy SSE
-    if (agentId === 'claude') {
-      return {
-        desc: t('clients.sseDesc'),
-        code: `claude mcp add --transport sse mcp-shelf ${quote(sseUrl)} --header 'Authorization: Bearer <MCP_SHELF_TOKEN>'`
-      };
-    }
-    if (agentId === 'agy') {
-      return {
-        desc: t('clients.sseDesc'),
-        code: JSON.stringify(
-          {
-            mcpServers: {
-              'mcp-shelf': {
-                url: sseUrl,
-                headers: { Authorization: 'Bearer <MCP_SHELF_TOKEN>' }
-              }
-            }
-          },
-          null,
-          2
-        )
-      };
-    }
-    return {
-      desc: t('clients.sseDesc'),
-      code: `${sseUrl}\nAuthorization: Bearer <MCP_SHELF_TOKEN>`
-    };
+    return { desc: t('clients.oauthDesc'), code: remoteUrl };
   }
 
   const currentSnip = resolveSnippet(activeMode, activeAgent);

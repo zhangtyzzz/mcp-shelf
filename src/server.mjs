@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import http from 'node:http';
 import { createHmac, scryptSync } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import {
   APP_VERSION,
@@ -196,7 +195,6 @@ export async function launch({
   const startedAt = Date.now();
   const auth = isRemote ? createAuth(cfg, adminPassword) : null;
   const oauthServer = new ShelfOAuthServer({ cfg, auth, isRemote });
-  const sseSessions = new Map();
   const publicHost = publicUrl ? new URL(publicUrl).host : '';
 
   const resolveAccess = (authHeader, expectedProfileId = null) => {
@@ -406,53 +404,6 @@ export async function launch({
       }
       if (method === 'POST' && route === '/oauth/token') {
         return json(200, await oauthServer.handleToken(req));
-      }
-
-      // Legacy SSE MCP transport (GET /sse or /sse/<profile_id> + POST /messages?sessionId=...)
-      const sseMatch = /^\/sse(?:\/([a-z][a-z0-9_-]{0,47}))?$/.exec(route);
-      if (sseMatch) {
-        const expectedProfileId = sseMatch[1] || null;
-        const access = resolveAccess(req.headers.authorization, expectedProfileId);
-        if (!access) {
-          res.setHeader(
-            'WWW-Authenticate',
-            `Bearer resource_metadata="${reqOrigin}/.well-known/oauth-protected-resource${route}"`
-          );
-          return json(401, { error: 'Bearer token required.' });
-        }
-        if (method !== 'GET') {
-          res.setHeader('Allow', 'GET');
-          return json(405, { error: 'Use GET for SSE stream.' });
-        }
-        req.setTimeout(0);
-        res.setTimeout(0);
-        const tr = new SSEServerTransport('/messages', res);
-        const mcp = buildMcpServer(access.profile);
-        sseSessions.set(tr.sessionId, { transport: tr, mcp, token: access.rawToken });
-        const unsub = cat.onChange(() => {
-          void mcp.sendToolListChanged().catch(() => {});
-        });
-        res.once('close', () => {
-          unsub();
-          sseSessions.delete(tr.sessionId);
-          void safeClose(mcp);
-        });
-        await mcp.connect(tr);
-        return;
-      }
-
-      if (route === '/messages' && method === 'POST') {
-        const sessionId = new URL(req.url, 'http://' + h).searchParams.get('sessionId') || '';
-        const sess = sseSessions.get(sessionId);
-        if (!sess) return json(404, { error: 'Unknown SSE session.' });
-        const authHdr = String(req.headers.authorization || '');
-        if (!authHdr.startsWith('Bearer ') || !same(authHdr.slice(7), sess.token)) {
-          res.setHeader('WWW-Authenticate', 'Bearer');
-          return json(401, { error: 'Bearer token mismatch.' });
-        }
-        const payload = await readBody(req);
-        await sess.transport.handlePostMessage(req, res, payload);
-        return;
       }
 
       // MCP Streamable HTTP endpoint (supports /mcp and profile-scoped /mcp/<profile_id>)
@@ -856,8 +807,6 @@ export async function launch({
     url: 'http://' + displayHost + ':' + server.address().port,
     close: async () => {
       const p = new Promise((r) => server.close(r));
-      for (const s of sseSessions.values()) void safeClose(s.mcp);
-      sseSessions.clear();
       server.closeAllConnections();
       tasks.close();
       await cat.close();
