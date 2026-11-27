@@ -174,7 +174,7 @@ export default {
   'meta.fingerprint': 'Fingerprint {fp}',
   'meta.callToolNote': 'Recommended to keep side-effect and user-confirmation guidance.',
   'meta.otherNote': 'Does not alter tool names, schemas, or permissions.',
-  'meta.hint': 'The stdio bridge forwards tools/list_changed. Streamable HTTP clients get updates on the next tools/list request.',
+  'meta.hint': 'Clients listening for tools/list_changed can refresh after an edit. Each tools/list request returns the current descriptions.',
   'clients.kicker': 'SETTINGS / CLIENTS',
   'clients.title': 'Connect Agents',
   'clients.sub': 'Add this MCP endpoint in your client.',

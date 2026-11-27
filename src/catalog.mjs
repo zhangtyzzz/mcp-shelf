@@ -242,21 +242,29 @@ export class Catalog {
     return () => this.listeners.delete(fn);
   }
 
-  fingerprint() {
+  fingerprint(profile = null) {
     const c = this.cfg.get();
     const summary = {
       descriptions: c.descriptions,
       servers: c.servers
-        .filter((s) => s.enabled)
+        .filter((s) => s.enabled && profileAllows(profile, s.id))
         .map((s) => ({
           id: s.id,
           label: s.label,
           description: s.description,
-          allowlist: [...s.allowlist].sort()
+          allowlist: [...s.allowlist].sort(),
+          toolCount: this.availableToolCount(s)
         }))
         .sort((a, b) => a.id.localeCompare(b.id, 'en'))
     };
     return createHash('sha256').update(JSON.stringify(summary)).digest('hex').slice(0, 12);
+  }
+
+  availableToolCount(server) {
+    const state = this.states.get(server.id);
+    return state?.status === 'ready'
+      ? state.tools.filter((tool) => this.isUsable(server, tool)).length
+      : server.allowlist.length;
   }
 
   notifyIfChanged() {
@@ -282,9 +290,7 @@ export class Catalog {
     if (!active.length) return '';
 
     const entries = active.map((s) => {
-      const r = this.states.get(s.id);
-      const count =
-        r?.status === 'ready' ? r.tools.filter((t) => this.isUsable(s, t)).length : s.allowlist.length;
+      const count = this.availableToolCount(s);
       const word = count === 1 ? 'tool' : 'tools';
       const desc = cleanMsg(s.description || (s.label !== s.id ? s.label : ''), 120);
       return {
@@ -550,6 +556,7 @@ export class Catalog {
       await safeClose(c);
     } finally {
       r.at = Date.now();
+      if (!r.invalid) this.notifyIfChanged();
     }
     return r;
   }

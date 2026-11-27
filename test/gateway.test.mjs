@@ -10,7 +10,8 @@ import {
  CancelTaskResultSchema,
  CreateTaskResultSchema,
  GetTaskResultSchema,
- ListTasksResultSchema
+ ListTasksResultSchema,
+ ToolListChangedNotificationSchema
 } from '@modelcontextprotocol/sdk/types.js';
 import {launch,createMcp,httpClient,demoSource} from '../src/main.mjs';
 import {defaults,openConfig} from '../src/config.mjs';
@@ -40,7 +41,7 @@ async function fixture(t){
 test('SDK via real HTTP gateway, discover exact schema and call namespaced stdio upstream', async t=>{
  const f=await fixture(t), c=await f.bridge();
  assert.deepEqual((await c.listTools()).tools.map(t=>t.name),['list_mcps','search_tool','call_tool']);
- assert.equal(c.getServerCapabilities().tools.listChanged,undefined);
+ assert.equal(c.getServerCapabilities().tools.listChanged,true);
  assert.equal((await data(c,'list_mcps')).total,0);
  const s=demoSource([]);await f.api('servers','POST',s,201);await f.api('servers/demo/refresh','POST');
  assert.equal((await f.get()).servers[0].tools.length,2);
@@ -80,6 +81,77 @@ test('SDK via real HTTP gateway, discover exact schema and call namespaced stdio
  assert.equal((await call(c,'call_tool',{tool_id:'demo/echo',arguments:{text:'no'}})).isError,true);
  await f.api('servers/other','PUT',{...s,id:'other',enabled:false,allowlist:['echo']});
  assert.equal((await call(c,'call_tool',{tool_id:'other/echo',arguments:{text:'no'}})).isError,true);
+});
+
+test('Streamable HTTP sends authenticated tool-list notifications only to affected profiles', {timeout: 5_000}, async t => {
+ const f = await fixture(t);
+ const demo = demoSource(['echo']);
+ const other = {...demo, id: 'other'};
+ await f.api('servers', 'POST', demo, 201);
+ await f.api('servers', 'POST', other, 201);
+ const selected = await f.api('profiles', 'POST', {id: 'only-demo', scope: 'selected', servers: ['demo']}, 201);
+ const path = '/mcp/only-demo';
+ const headers = {Accept: 'text/event-stream', Authorization: 'Bearer ' + selected.token};
+ assert.equal((await fetch(f.app.url + path, {headers: {Accept: headers.Accept}})).status, 401);
+ assert.equal((await fetch(f.app.url + '/mcp/other', {headers})).status, 401);
+ assert.equal((await fetch(f.app.url + path, {headers: {...headers, Origin: 'https://foreign.example'}})).status, 403);
+ assert.equal((await fetch(f.app.url + path, {headers: {...headers, 'MCP-Protocol-Version': '2000-01-01'}})).status, 400);
+
+ async function subscribe(endpoint, secret) {
+  const client = new Client({name: 'change-listener', version: '1'});
+  t.after(() => client.close());
+  const ready = Promise.withResolvers();
+  const notices = [];
+  let next = Promise.withResolvers();
+  client.setNotificationHandler(ToolListChangedNotificationSchema, (message) => {
+   notices.push(message.method);
+   const delivered = next;
+   next = Promise.withResolvers();
+   delivered.resolve();
+  });
+  const transport = httpClient(f.app.url + endpoint, {Authorization: 'Bearer ' + secret}, undefined, async (url, options) => {
+   const response = await fetch(url, options);
+   if (options.method === 'GET') ready.resolve(response);
+   return response;
+  });
+  await client.connect(transport);
+  const stream = await ready.promise;
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get('content-type'), /^text\/event-stream/);
+  assert.equal(stream.headers.get('x-accel-buffering'), 'no');
+  assert.equal(stream.headers.has('mcp-session-id'), false);
+  return {client, notices, next: () => next.promise};
+ }
+
+ const master = await subscribe('/mcp', f.app.config.get().token);
+ const scoped = await subscribe(path, selected.token);
+ const masterChanged = master.next();
+ await f.api('servers/other', 'PUT', {...other, description: 'Hidden connection changed'});
+ await masterChanged;
+ assert.match((await master.client.listTools()).tools[0].description, /Hidden connection changed/);
+
+ const changed = scoped.next();
+ await f.api('descriptions', 'PUT', {search_tool: 'Updated live search'});
+ await changed;
+ assert.deepEqual(scoped.notices, ['notifications/tools/list_changed']);
+ assert.match((await scoped.client.listTools()).tools[1].description, /^Updated live search/);
+ assert.doesNotMatch((await scoped.client.listTools()).tools[0].description, /Hidden connection changed/);
+
+ const newApproval = scoped.next();
+ await f.api('servers/demo', 'PUT', {...demo, allowlist: ['add']});
+ await newApproval;
+ assert.deepEqual((await data(scoped.client, 'list_mcps')).servers[0].tools, ['demo/add']);
+
+ const restricted = scoped.next();
+ await f.api('profiles/only-demo', 'PUT', {scope: 'selected', servers: []});
+ await restricted;
+ assert.doesNotMatch((await scoped.client.listTools()).tools[0].description, /- demo \(/);
+
+ const oldStream = await fetch(f.app.url + path, {headers, signal: AbortSignal.timeout(5_000)});
+ assert.equal(oldStream.status, 200);
+ await f.api('profiles/only-demo/rotate', 'POST');
+ assert.equal(await oldStream.text(), ': connected\n\n');
+ assert.equal((await fetch(f.app.url + path, {headers})).status, 401);
 });
 
 test('profile scopes migrate with existing tokens and empty selections stay closed', async t => {
@@ -138,12 +210,24 @@ test('profile scopes migrate with existing tokens and empty selections stay clos
  assert.equal(fs.readFileSync(backup, 'utf8'), original);
 });
 
-test('real stdio subprocess bridge and restart persistence', async t=>{
+test('real stdio subprocess bridge and restart persistence', {timeout: 10_000}, async t=>{
  const f=await fixture(t);
  await f.api('servers','POST',demoSource(['add']),201);
+ const eventsOpened=Promise.withResolvers();
+ const onEventStream=(req)=>{
+  if(req.method==='GET'&&req.url==='/mcp'){
+   f.app.server.off('request',onEventStream);
+   eventsOpened.resolve();
+  }
+ };
+ f.app.server.on('request',onEventStream);
  let c=await f.bridge(true);
  assert.equal(c.getServerCapabilities().tools.listChanged,true);
+ await eventsOpened.promise;
+ const notice=Promise.withResolvers();
+ c.setNotificationHandler(ToolListChangedNotificationSchema,()=>notice.resolve());
  await f.api('descriptions','PUT',{search_tool:'自定义搜索'});
+ await notice.promise;
  assert.ok((await c.listTools()).tools[1].description.startsWith('自定义搜索'));
  assert.match((await c.listTools()).tools[1].description,/Connected MCP servers:\n- demo \(1 tool\):/);
  assert.match(c.getInstructions()||'',/Connected MCP servers:\n- demo \(1 tool\):/);
@@ -184,7 +268,7 @@ test('admin guards, separate client secret, and rejected unsafe URL settings',as
  assert.equal((await fetch(u+'/api/state',{headers:{'Sec-Fetch-Site':'cross-site'}})).status,403);
  assert.equal((await fetch(u+'/api/demo',{method:'POST'})).status,403);
  assert.equal((await fetch(u+'/mcp',{method:'POST'})).status,401);
- assert.equal((await fetch(u+'/mcp',{headers:{Authorization:'Bearer '+f.app.config.get().token}})).status,405);
+ assert.equal((await fetch(u+'/mcp',{headers:{Authorization:'Bearer '+f.app.config.get().token}})).status,406);
  assert.equal(await new Promise((ok,no)=>http.get(u+'/api/state',{headers:{Host:'invalid.example'}},r=>{r.resume();ok(r.statusCode);}).on('error',no)),403);
  assert.equal(JSON.stringify(await f.get()).includes(f.app.config.get().token),false);
  await f.api('servers','POST',{id:'unsafe',transport:'http',url:'http://example.com/mcp',enabled:true},400);

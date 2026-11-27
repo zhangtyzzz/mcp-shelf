@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   CLI_PATH,
   defaults,
@@ -69,48 +69,6 @@ const shutdown = (fn) => {
   }
 };
 
-function subscribeToolChanges(port, secret, onToolsChanged) {
-  let req = null;
-  let stopped = false;
-
-  const connect = () => {
-    if (stopped) return;
-    req = http.get(
-      {
-        host: '127.0.0.1',
-        port,
-        path: '/mcp-events',
-        headers: { Authorization: 'Bearer ' + secret, Accept: 'text/event-stream' }
-      },
-      (res) => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          return;
-        }
-        let buf = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk) => {
-          buf += chunk;
-          const parts = buf.split('\n\n');
-          buf = parts.pop() || '';
-          for (const frame of parts) {
-            if (/^event:\s*tools_changed\b/m.test(frame)) {
-              onToolsChanged();
-            }
-          }
-        });
-      }
-    );
-    req.on('error', () => {});
-  };
-
-  connect();
-  return () => {
-    stopped = true;
-    req?.destroy();
-  };
-}
-
 async function main() {
   const mode = process.argv[2] || 'serve';
   if (mode === 'demo-upstream') {
@@ -143,15 +101,9 @@ async function main() {
       { instructions: c.getInstructions(), listChanged: true }
     );
     await s.connect(new StdioServerTransport());
-    const stopEvents = subscribeToolChanges(port, secret, () => {
-      void s.sendToolListChanged().catch(() => {});
-    });
-    process.stdin.once('end', () => {
-      stopEvents();
-      void safeClose(c);
-    });
+    c.setNotificationHandler(ToolListChangedNotificationSchema, () => s.sendToolListChanged());
+    process.stdin.once('end', () => void safeClose(c));
     shutdown(async () => {
-      stopEvents();
       await safeClose(s);
       await safeClose(c);
     });

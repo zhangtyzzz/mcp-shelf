@@ -31,7 +31,7 @@ MCP Shelf is a lightweight, zero-build Model Context Protocol (MCP) gateway and 
 | `search_tool` | Searches approved upstream tools by keyword or exact `tool_id` (with CJK bigram fallback). Returns full `inputSchema` / `outputSchema` and a `how_to_call` hint by default (`include_schema: false` for compact names). |
 | `call_tool` | Proxy-invokes one approved upstream tool by `server/tool` ID after local JSON Schema validation, preserving structured content and upstream error flags. |
 
-The stdio bridge forwards `notifications/tools/list_changed` when the exposed tool list or meta-tool descriptions change. The Streamable HTTP endpoint is stateless. It serves fresh meta-tool descriptions on each `tools/list` request, and a client that caches tool definitions may need to reconnect. Run `search_tool` again to see edits to individual upstream tool descriptions.
+Clients can receive `notifications/tools/list_changed` on the authenticated SSE stream opened with `GET /mcp` (or `GET /mcp/<profile>`). The stdio bridge forwards the same notification. Each `tools/list` request returns the current meta-tool descriptions. Run `search_tool` again to see edits to individual upstream tool descriptions. Clients that cache tool definitions and do not listen for notifications may need to reconnect.
 
 ## Quick Start
 

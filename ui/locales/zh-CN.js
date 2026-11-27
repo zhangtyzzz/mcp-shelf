@@ -174,7 +174,7 @@ export default {
   'meta.fingerprint': '指纹 {fp}',
   'meta.callToolNote': '建议保留副作用及用户确认要求。',
   'meta.otherNote': '文案不改变工具名、参数或权限。',
-  'meta.hint': 'stdio 桥接会转发 tools/list_changed。Streamable HTTP 客户端在下次请求 tools/list 时获取更新。',
+  'meta.hint': '监听 tools/list_changed 的客户端可在编辑后刷新。每次 tools/list 请求都会返回最新描述。',
   'clients.kicker': 'SETTINGS / CLIENTS',
   'clients.title': '接入 Agent',
   'clients.sub': '把这个 MCP 地址添加到你的客户端。',

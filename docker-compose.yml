@@ -19,7 +19,7 @@ services:
       MCP_SHELF_HOME: "/data"
       # Required in remote mode (>= 12 chars). Generate via: openssl rand -base64 24
       MCP_SHELF_ADMIN_PASSWORD: "${MCP_SHELF_ADMIN_PASSWORD:?Set MCP_SHELF_ADMIN_PASSWORD (>=12 chars)}"
-      # Optional: your public HTTPS URL (for reverse-proxy Host/Origin checks, OAuth metadata & client snippets).
+      # Optional: your public HTTPS URL (for reverse-proxy Host/Origin checks, OAuth metadata and the MCP endpoint).
       # Leave empty when testing over plain HTTP or a raw IP; set to e.g. https://mcp.example.com behind Caddy/Nginx.
       MCP_SHELF_PUBLIC_URL: "${MCP_SHELF_PUBLIC_URL:-}"
       # Lifetime in seconds for newly issued MCP Shelf OAuth access tokens (default 24 hours).

@@ -12,7 +12,7 @@ const escHtml = (s) =>
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { McpError, ErrorCode, SUPPORTED_PROTOCOL_VERSIONS } from '@modelcontextprotocol/sdk/types.js';
 import {
   APP_VERSION,
   BUILTIN_TEMPLATES,
@@ -42,6 +42,13 @@ import { answer, Catalog, checks, createMcp, meta, safeClose } from './catalog.m
 import { OAuthStore } from './oauth.mjs';
 import { ShelfOAuthServer } from './oauth_server.mjs';
 import { TaskManager } from './tasks.mjs';
+
+const MAX_MCP_EVENT_STREAMS = 128;
+const MCP_EVENT_HEARTBEAT_MS = 20_000;
+const TOOL_LIST_CHANGED = {
+  jsonrpc: '2.0',
+  method: 'notifications/tools/list_changed'
+};
 
 const security = {
   'Cache-Control': 'no-store',
@@ -272,6 +279,56 @@ export async function launch({
     return null;
   };
 
+  // Each standalone GET is a separate subscription. POST remains sessionless.
+  const toolStreams = new Set();
+  const refreshToolStreams = () => {
+    for (const refresh of toolStreams) refresh();
+  };
+  const unsubscribeToolStreams = cat.onChange(refreshToolStreams);
+
+  const openToolStream = (req, res, access, authenticate) => {
+    let last = cat.fingerprint(access.profile);
+    const write = (data) => {
+      if (!res.destroyed && !res.writableEnded && !res.write(data)) res.destroy();
+    };
+    const refresh = () => {
+      try {
+        const current = authenticate();
+        if (!current) {
+          res.end();
+          return false;
+        }
+        const next = cat.fingerprint(current.profile);
+        if (next !== last) {
+          last = next;
+          write(`event: message\ndata: ${JSON.stringify(TOOL_LIST_CHANGED)}\n\n`);
+        }
+        return !res.destroyed;
+      } catch {
+        res.destroy();
+        return false;
+      }
+    };
+
+    req.setTimeout(0);
+    res.setTimeout(0);
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store, no-transform',
+      'X-Accel-Buffering': 'no'
+    });
+    const keepAlive = setInterval(() => {
+      if (refresh()) write(': ping\n\n');
+    }, MCP_EVENT_HEARTBEAT_MS);
+    keepAlive.unref();
+    toolStreams.add(refresh);
+    res.once('close', () => {
+      clearInterval(keepAlive);
+      toolStreams.delete(refresh);
+    });
+    write(': connected\n\n');
+  };
+
   const buildMcpServer = (activeProfile) => {
     const profileId = activeProfile?.id || null;
     return createMcp(
@@ -297,6 +354,7 @@ export async function launch({
       },
       {
         instructions: cat.metaInstructions(activeProfile),
+        listChanged: true,
         taskHandlers: {
           get: (id) => tasks.get(id, profileId),
           result: (id, signal) => tasks.result(id, profileId, signal),
@@ -499,7 +557,8 @@ export async function launch({
       const mcpMatch = /^\/mcp(?:\/([a-z][a-z0-9_-]{0,47}))?$/.exec(route);
       if (mcpMatch) {
         const expectedProfileId = mcpMatch[1] || null;
-        const access = resolveAccess(req.headers.authorization, expectedProfileId, reqOrigin + route);
+        const authenticate = () => resolveAccess(req.headers.authorization, expectedProfileId, reqOrigin + route);
+        const access = authenticate();
         if (!access) {
           const invalidToken = req.headers.authorization?.startsWith('Bearer ') ? 'error="invalid_token", ' : '';
           res.setHeader(
@@ -508,9 +567,23 @@ export async function launch({
           );
           return json(401, { error: 'Bearer token required.' });
         }
+        if (method === 'GET') {
+          const accept = String(req.headers.accept || '').toLowerCase();
+          if (!accept.split(',').some((type) => type.split(';', 1)[0].trim() === 'text/event-stream')) {
+            return json(406, { error: 'Accept text/event-stream to open an MCP event stream.' });
+          }
+          const protocol = req.headers['mcp-protocol-version'];
+          if (protocol !== undefined && !SUPPORTED_PROTOCOL_VERSIONS.includes(protocol)) {
+            return json(400, { error: 'Unsupported MCP protocol version.' });
+          }
+          if (toolStreams.size >= MAX_MCP_EVENT_STREAMS) {
+            return json(503, { error: 'MCP event stream capacity reached.' });
+          }
+          return openToolStream(req, res, access, authenticate);
+        }
         if (method !== 'POST') {
-          res.setHeader('Allow', 'POST');
-          return json(405, { error: 'Use Streamable HTTP POST.' });
+          res.setHeader('Allow', 'GET, POST');
+          return json(405, { error: 'Use Streamable HTTP GET or POST.' });
         }
         const request = await readBody(req);
         const mcp = buildMcpServer(access.profile);
@@ -657,6 +730,7 @@ export async function launch({
           const updated = { ...existing, token: nextTok };
           cfg.save({ ...now, profiles: now.profiles.map((pr) => (pr.id === pid ? updated : pr)) });
           oauthServer.revokeByProfile(pid);
+          refreshToolStreams();
           return json(200, { ok: true, token: nextTok });
         }
         if (editing) {
@@ -666,11 +740,13 @@ export async function launch({
             : data.scope;
           const updated = parseProfile({ ...existing, ...data, scope, id: pid, token: existing.token });
           cfg.save({ ...now, profiles: now.profiles.map((pr) => (pr.id === pid ? updated : pr)) });
+          refreshToolStreams();
           return json(200, { ok: true });
         }
         if (!sub && method === 'DELETE') {
           cfg.save({ ...now, profiles: now.profiles.filter((pr) => pr.id !== pid) });
           oauthServer.revokeByProfile(pid);
+          refreshToolStreams();
           return json(200, { ok: true });
         }
       }
@@ -683,6 +759,7 @@ export async function launch({
         const nextToken = token();
         cfg.save({ ...cfg.get(), token: nextToken });
         oauthServer.revokeByProfile(null);
+        refreshToolStreams();
         return json(200, { ok: true, token: nextToken });
       }
 
@@ -700,6 +777,7 @@ export async function launch({
         const next = normalizeSettings({ ...cfg.get().settings, ...(await readBody(req)) });
         cfg.save({ ...cfg.get(), settings: next });
         cat.applySettings();
+        cat.notifyIfChanged();
         return json(200, { ok: true, settings: next });
       }
 
@@ -904,6 +982,7 @@ export async function launch({
     mode: isRemote ? 'remote' : 'local',
     url: 'http://' + displayHost + ':' + server.address().port,
     close: async () => {
+      unsubscribeToolStreams();
       const p = new Promise((r) => server.close(r));
       server.closeAllConnections();
       tasks.close();

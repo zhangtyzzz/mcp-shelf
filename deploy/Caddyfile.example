@@ -6,7 +6,7 @@ mcp.example.com {
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
     reverse_proxy 127.0.0.1:8787 {
-        # Keep SSE (/mcp-events) and long tool calls flushing immediately
+        # Flush MCP notifications and long tool calls immediately
         flush_interval -1
     }
 }

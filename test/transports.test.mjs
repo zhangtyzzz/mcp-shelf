@@ -243,8 +243,14 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   assert.deepEqual(echoedAfter, { echo: 'survived-restart' });
   await mcpAfterRestart.close();
 
-  const bearerGet = (resource, token) => fetch(restarted.url + resource, { headers: { Authorization: 'Bearer ' + token } });
-  assert.equal((await bearerGet('/mcp', legacyToken)).status, 405, 'legacy access token still authenticates');
+  const bearerGet = async (resource, token) => {
+    const response = await fetch(restarted.url + resource, {
+      headers: { Authorization: 'Bearer ' + token, Accept: 'text/event-stream' }
+    });
+    await response.body?.cancel();
+    return response;
+  };
+  assert.equal((await bearerGet('/mcp', legacyToken)).status, 200, 'legacy access token still authenticates');
   const refresh = (refresh_token, overrides = {}) => fetch(restarted.url + '/oauth/token', {
     method: 'POST',
     body: new URLSearchParams({ grant_type: 'refresh_token', client_id: client.client_id, refresh_token, ...overrides })
@@ -267,7 +273,7 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   const rotated = await rotatedResponse.json();
   assert.notEqual(rotated.access_token, tokData.access_token);
   assert.notEqual(rotated.refresh_token, tokData.refresh_token);
-  assert.equal((await bearerGet('/mcp/only-demo', rotated.access_token)).status, 405);
+  assert.equal((await bearerGet('/mcp/only-demo', rotated.access_token)).status, 200);
   assert.equal((await bearerGet('/mcp/other', rotated.access_token)).status, 401);
 
   // 8. Rotating profile token revokes profile-scoped OAuth access tokens, and logout revokes session cookie
@@ -299,7 +305,7 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   });
   assert.equal(anotherExchange.status, 200);
   const otherGrant = await anotherExchange.json();
-  assert.equal((await bearerGet('/mcp/only-demo', otherGrant.access_token)).status, 405);
+  assert.equal((await bearerGet('/mcp/only-demo', otherGrant.access_token)).status, 200);
   assert.equal((await bearerGet('/mcp', otherGrant.access_token)).status, 401);
 
   const replay = await refresh(tokData.refresh_token);
@@ -307,7 +313,7 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   assert.equal((await replay.json()).error, 'invalid_grant');
   assert.equal((await bearerGet('/mcp/only-demo', rotated.access_token)).status, 401);
   assert.equal((await refresh(rotated.refresh_token)).status, 400);
-  assert.equal((await bearerGet('/mcp/only-demo', otherGrant.access_token)).status, 405);
+  assert.equal((await bearerGet('/mcp/only-demo', otherGrant.access_token)).status, 200);
 
   const rotRes = await fetch(restarted.url + '/api/profiles/only-demo/rotate', {
     method: 'POST',
