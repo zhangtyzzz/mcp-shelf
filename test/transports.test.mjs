@@ -181,3 +181,77 @@ test('MCP Shelf built-in OAuth 2.1 + PKCE S256 server (discovery, DCR, password 
   ).structuredContent;
   assert.deepEqual(echoed, { echo: 'oauth-works' });
 });
+
+test('Remote mode behind HTTPS reverse proxy (Host, Origin, X-Forwarded-Proto, Secure cookie, OAuth metadata)', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shelf-proxy-'));
+  const app = await launch({
+    dir,
+    port: 0,
+    mode: 'remote',
+    host: '127.0.0.1',
+    publicUrl: 'https://mcp.example.com',
+    adminPassword: 'proxy-strong-password-123'
+  });
+  t.after(async () => {
+    await app.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Use node:http so we can set an explicit Host header (undici fetch overrides Host)
+  const { default: http } = await import('node:http');
+  const port = Number(new URL(app.url).port);
+  const req = (method, reqPath, headers = {}, body = null) =>
+    new Promise((resolve, reject) => {
+      const r = http.request({ hostname: '127.0.0.1', port, method, path: reqPath, headers }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+      });
+      r.on('error', reject);
+      if (body) r.write(body);
+      r.end();
+    });
+
+  // 1. Unknown Host rejected with 403 when MCP_SHELF_PUBLIC_URL is set
+  const badHost = await req('GET', '/healthz', { Host: 'evil.attacker.test' });
+  assert.equal(badHost.status, 403);
+
+  // 2. Matching Host + X-Forwarded-Proto: https succeeds on /healthz and OAuth metadata uses publicUrl
+  const okHealth = await req('GET', '/healthz', { Host: 'mcp.example.com', 'X-Forwarded-Proto': 'https' });
+  assert.equal(okHealth.status, 200);
+
+  const asmRes = await req('GET', '/.well-known/oauth-authorization-server', {
+    Host: 'mcp.example.com',
+    'X-Forwarded-Proto': 'https'
+  });
+  assert.equal(asmRes.status, 200);
+  const asm = JSON.parse(asmRes.body);
+  assert.equal(asm.issuer, 'https://mcp.example.com');
+  assert.equal(asm.authorization_endpoint, 'https://mcp.example.com/oauth/authorize');
+
+  // 3. Login over reverse proxy sets Secure + HttpOnly + SameSite=Strict cookie
+  const loginRes = await req(
+    'POST',
+    '/api/auth/login',
+    {
+      Host: 'mcp.example.com',
+      Origin: 'https://mcp.example.com',
+      'X-Forwarded-Proto': 'https',
+      'Content-Type': 'application/json'
+    },
+    JSON.stringify({ password: 'proxy-strong-password-123' })
+  );
+  assert.equal(loginRes.status, 200);
+  const setCookie = String(loginRes.headers['set-cookie']?.[0] || '');
+  assert.match(setCookie, /HttpOnly/i);
+  assert.match(setCookie, /SameSite=Strict/i);
+  assert.match(setCookie, /Secure/i);
+
+  // 4. Cross-origin request rejected with 403
+  const badOrigin = await req('GET', '/api/state', {
+    Host: 'mcp.example.com',
+    Origin: 'https://evil.attacker.test',
+    Cookie: setCookie.split(';')[0]
+  });
+  assert.equal(badOrigin.status, 403);
+});

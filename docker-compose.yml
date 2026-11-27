@@ -15,8 +15,9 @@ services:
       MCP_SHELF_HOME: "/data"
       # Required in remote mode (>= 12 chars). Generate via: openssl rand -base64 24
       MCP_SHELF_ADMIN_PASSWORD: "${MCP_SHELF_ADMIN_PASSWORD:?Set MCP_SHELF_ADMIN_PASSWORD (>=12 chars)}"
-      # Recommended: your public HTTPS URL (for reverse-proxy Host/Origin checks & client snippets)
-      MCP_SHELF_PUBLIC_URL: "${MCP_SHELF_PUBLIC_URL:-https://mcp.example.com}"
+      # Optional: your public HTTPS URL (for reverse-proxy Host/Origin checks, OAuth metadata & client snippets).
+      # Leave empty when testing over plain HTTP or a raw IP; set to e.g. https://mcp.example.com behind Caddy/Nginx.
+      MCP_SHELF_PUBLIC_URL: "${MCP_SHELF_PUBLIC_URL:-}"
       # Pass upstream MCP credentials via env vars (never written into config.json):
       # GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
       # LINEAR_API_KEY: "${LINEAR_API_KEY:-}"
