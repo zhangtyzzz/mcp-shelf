@@ -91,11 +91,11 @@ export const createMcp = (list, call, opts = APP_NAME) => {
 
 export const newClient = () => new Client({ name: APP_NAME, version: APP_VERSION });
 
-export const httpClient = (url, headers = {}, authProvider = undefined) =>
+export const httpClient = (url, headers = {}, authProvider = undefined, fetchFn = fetch) =>
   new StreamableHTTPClientTransport(new URL(url), {
     ...(authProvider ? { authProvider } : {}),
     requestInit: { headers },
-    fetch: (i, o) => fetch(i, { ...o, redirect: 'error' })
+    fetch: (i, o) => fetchFn(i, { ...o, redirect: 'error' })
   });
 
 const allowed = (s, t) => s.allowlist.includes(t.name);
@@ -465,7 +465,7 @@ export class Catalog {
               throw new Error('');
             }
             const provider = this.oauthStore.createProvider(s.id);
-            transport = httpClient(s.url, {}, provider);
+            transport = httpClient(s.url, {}, provider, this.oauthStore.fetchFor(s.id));
           } else {
             if (s.bearerEnv && !process.env[s.bearerEnv]) {
               error = `Missing Bearer environment variable: ${s.bearerEnv}.`;

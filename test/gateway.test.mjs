@@ -559,8 +559,10 @@ test('v0.7.0: access profiles, schema drift lock, MCP 2025-11-25 async tasks, ic
 
  // 6. End-to-end OAuth 2.1 + PKCE flow against a local mock OAuth + MCP server
  let issuedToken = 'oauth-access-token-12345';
+ let refreshToken = 'mock-refresh-token';
  let refreshAttempts = 0;
  let refreshError;
+ let rotateOnRefresh = false;
  const oauthServer = http.createServer(async (req, res) => {
   const base = 'http://127.0.0.1:' + oauthServer.address().port;
   const u = new URL(req.url, base);
@@ -589,13 +591,18 @@ test('v0.7.0: access profiles, schema drift lock, MCP 2025-11-25 async tasks, ic
    const params = new URLSearchParams(body);
    if (params.get('grant_type') === 'refresh_token') {
     refreshAttempts++;
-    assert.equal(params.get('refresh_token'), 'mock-refresh-token');
-    if (refreshError) {
-     res.writeHead(refreshError === 'server_error' ? 503 : 400, { 'Content-Type': 'application/json' });
-     return res.end(JSON.stringify({ error: refreshError }));
+    const error = params.get('refresh_token') !== refreshToken ? 'invalid_grant' : refreshError;
+    if (error) {
+     res.writeHead(error === 'server_error' ? 503 : 400, { 'Content-Type': 'application/json' });
+     return res.end(JSON.stringify({ error }));
+    }
+    if (rotateOnRefresh) {
+     refreshToken = 'mock-rotated-refresh-token';
+     await new Promise(resolve => setTimeout(resolve, 75));
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ access_token: issuedToken, token_type: 'Bearer', expires_in: 3600 }));
+    return res.end(JSON.stringify({ access_token: issuedToken, token_type: 'Bearer', expires_in: 3600,
+     ...(rotateOnRefresh ? { refresh_token: refreshToken } : {}) }));
    }
    assert.equal(params.get('grant_type'), 'authorization_code');
    res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -654,19 +661,29 @@ test('v0.7.0: access profiles, schema drift lock, MCP 2025-11-25 async tasks, ic
  assert.equal(renewed.codeVerifier, legacy.codeVerifier);
  assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').status, 'ready');
 
+ // Two tool calls on a connected transport share a single-use refresh token exchange.
+ issuedToken = 'oauth-access-token-rotated';
+ rotateOnRefresh = true;
+ const toolCall = { tool_id: 'oauth-srv/secret_read', arguments: {} };
+ const calls = await Promise.all([f.app.catalog.testCall(toolCall), f.app.catalog.testCall(toolCall)]);
+ assert.deepEqual(calls.map(result => result.content[0].text), ['ok', 'ok']);
+ assert.equal(refreshAttempts, 2);
+ const rotated = JSON.parse(fs.readFileSync(oauthFile, 'utf8'));
+ assert.equal(rotated.tokens.refresh_token, refreshToken);
+
  // A transient upstream failure preserves the refresh token for retry.
  issuedToken = 'oauth-access-token-revoked';
  refreshError = 'server_error';
  const unavailable = await f.api('servers/oauth-srv/refresh', 'POST', undefined, 502);
  assert.match(unavailable.error, /OAuth token refresh failed/);
- assert.deepEqual(JSON.parse(fs.readFileSync(oauthFile, 'utf8')), renewed);
+ assert.deepEqual(JSON.parse(fs.readFileSync(oauthFile, 'utf8')), rotated);
 
  // A revoked refresh token requires a fresh user sign-in.
  refreshError = 'invalid_grant';
  const failure = await f.api('servers/oauth-srv/refresh', 'POST', undefined, 502);
  assert.match(failure.error, /OAuth sign-in required/);
  assert.equal((await f.get()).servers.find(s => s.id === 'oauth-srv').oauthStatus, 'required');
- assert.equal(refreshAttempts, 3);
+ assert.equal(refreshAttempts, 4);
  assert.equal((await f.api('servers/oauth-srv/oauth/start', 'POST')).status, 'redirect');
 
  await f.api('servers/oauth-srv/oauth/logout', 'POST');

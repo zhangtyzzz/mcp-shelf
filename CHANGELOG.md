@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [0.8.4] - 2026-11-28
 
 ### Fixed
-- **Upstream OAuth renewal**: Keep background Streamable HTTP connections on the OAuth authorization-code flow so stored refresh tokens renew expired access tokens. Preserve credentials on transient refresh failures and offer a new sign-in when credentials expire or are revoked.
+- **Upstream OAuth renewal**: Keep background Streamable HTTP connections on the OAuth authorization-code flow so stored refresh tokens renew expired access tokens. Concurrent calls share a refresh request for the same credentials. Transient failures preserve credentials, and missing or revoked credentials prompt for sign-in.
 
 ## [0.8.3] - 2026-11-27
 

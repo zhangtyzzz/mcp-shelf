@@ -4,12 +4,14 @@ import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
 import { APP_NAME, token } from './config.mjs';
 
 const signInRequired = 'OAuth sign-in required. Click OAuth Sign In in Connections.';
+const refreshReplyReuseMs = 10_000;
 
 export class OAuthStore {
   constructor(dir, defaultRedirectUrl) {
     this.dir = path.join(dir, 'oauth');
     this.defaultRedirectUrl = defaultRedirectUrl;
     this.pending = new Map();
+    this.refreshRequests = new Map();
   }
 
   fileFor(serverId) {
@@ -37,6 +39,7 @@ export class OAuthStore {
   }
 
   clear(serverId) {
+    this.refreshRequests.delete(serverId);
     const file = this.fileFor(serverId);
     if (fs.existsSync(file)) fs.unlinkSync(file);
     for (const [st, rec] of this.pending) {
@@ -53,9 +56,51 @@ export class OAuthStore {
     return this.hasTokens(serverId) ? 'connected' : 'required';
   }
 
+  fetchFor(serverId) {
+    return async (input, init) => {
+      const params = init?.body;
+      const refreshToken = params instanceof URLSearchParams && params.get('grant_type') === 'refresh_token'
+        ? params.get('refresh_token') : null;
+      if (!refreshToken) return fetch(input, init);
+
+      const current = this.read(serverId).tokens;
+      const requestKey = JSON.stringify([
+        String(input), new Headers(init.headers).get('authorization'), params.toString()
+      ]);
+      const active = this.refreshRequests.get(serverId);
+      // Concurrent SDK auth flows can present the same single-use refresh token.
+      if (active?.requestKey === requestKey && active.until > Date.now() && current?.refresh_token) {
+        if ((current.refresh_token === refreshToken && active.accessToken === current.access_token) ||
+          active.rotatedToken === current.refresh_token) return (await active.response).clone();
+      }
+      if (current?.refresh_token !== refreshToken) throw new Error('OAuth credentials changed during refresh.');
+
+      const entry = { requestKey, accessToken: current?.access_token, until: Infinity };
+      const forget = () => {
+        if (this.refreshRequests.get(serverId) === entry) this.refreshRequests.delete(serverId);
+      };
+      entry.response = fetch(input, init).then(async (response) => {
+        const tokens = response.ok ? await response.clone().json().catch(() => null) : null;
+        if (tokens?.access_token && tokens.refresh_token && tokens.refresh_token !== refreshToken) {
+          entry.rotatedToken = tokens.refresh_token;
+          entry.until = Date.now() + refreshReplyReuseMs;
+        } else {
+          forget();
+        }
+        return response;
+      }, (error) => {
+        forget();
+        throw error;
+      });
+      this.refreshRequests.set(serverId, entry);
+      return (await entry.response).clone();
+    };
+  }
+
   createProvider(serverId, redirectUrl, { onAuthorize, stateValue } = {}) {
     const store = this;
     const background = redirectUrl === undefined;
+    const clientId = background ? store.read(serverId).clientInformation?.client_id : undefined;
     return {
       get redirectUrl() {
         if (!background) return redirectUrl;
@@ -101,7 +146,9 @@ export class OAuthStore {
       },
       saveTokens(tokens) {
         const cur = store.read(serverId);
-        if (background && !cur.clientInformation) throw new Error(signInRequired);
+        if (background && (!cur.clientInformation || cur.clientInformation.client_id !== clientId)) {
+          throw new Error(signInRequired);
+        }
         store.write(serverId, { ...cur, ...(!background && { redirectUrl: String(redirectUrl) }), tokens });
       },
       redirectToAuthorization(url) {
@@ -118,6 +165,7 @@ export class OAuthStore {
       },
       invalidateCredentials(scope) {
         const cur = store.read(serverId);
+        if (background && cur.clientInformation?.client_id !== clientId) return;
         if (scope === 'all') {
           store.clear(serverId);
         } else if (scope === 'tokens') {
@@ -150,7 +198,7 @@ export class OAuthStore {
       }
     });
 
-    const outcome = await auth(provider, { serverUrl: new URL(server.url) });
+    const outcome = await auth(provider, { serverUrl: new URL(server.url), fetchFn: this.fetchFor(server.id) });
     if (outcome === 'AUTHORIZED') {
       return { status: 'authorized' };
     }
