@@ -37,10 +37,13 @@ try {
   // Default locale is English
   await p.goto(app.url);
   await p.getByRole('heading', { name: 'Connections', exact: true }).waitFor();
+  assert.equal(await p.title(), 'MCP Shelf · Tool Workbench');
+  assert.equal(await p.locator('#mode-label').textContent(), 'Local instance');
 
   // Verify live i18n switching (en -> zh-CN -> en)
   await p.locator('#lang-select').selectOption('zh-CN');
   await p.getByRole('heading', { name: '连接管理', exact: true }).waitFor();
+  assert.equal(await p.title(), 'MCP Shelf · 工具工作台');
   await p.locator('#lang-select').selectOption('en');
   await p.getByRole('heading', { name: 'Connections', exact: true }).waitFor();
 
@@ -169,9 +172,21 @@ try {
   await restoreButton.click();
   await p.getByText('MCP Shelf backup restored.', { exact: true }).waitFor();
 
-  // OAuth uses a native browser form, so Chromium controls the Origin header.
   const adminPassword = 'browser-test-password';
   oauthApp = await launch({ dir: path.join(dir, 'remote'), port: 0, mode: 'remote', host: '127.0.0.1', adminPassword });
+  await p.goto(oauthApp.url);
+  await p.getByRole('heading', { name: 'Sign in to MCP Shelf', exact: true }).waitFor();
+  assert.equal(await p.title(), 'MCP Shelf · Tool Workbench');
+  assert.equal(await p.locator('#instance-tag').innerText(), 'Remote');
+  assert.equal(await p.locator('#mode-label').textContent(), 'Remote instance');
+  await p.locator('#lang-select').selectOption('zh-CN');
+  await p.getByRole('heading', { name: '登录 MCP Shelf 管理台', exact: true }).waitFor();
+  assert.equal(await p.title(), 'MCP Shelf · 工具工作台');
+  assert.equal(await p.locator('aside header small').textContent(), '工具工作台');
+  assert.equal(await p.locator('#instance-tag').innerText(), '远程实例');
+  assert.equal(await p.locator('#mode-label').textContent(), '远程实例');
+
+  // OAuth uses a native browser form, so Chromium controls the Origin header.
   const callback = app.url + '/healthz';
   const registration = await fetch(oauthApp.url + '/oauth/register', {
     method: 'POST',

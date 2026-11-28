@@ -1,5 +1,5 @@
 export default {
-  'app.title': 'MCP Shelf · Local Tool Workbench',
+  'app.title': 'MCP Shelf · Tool Workbench',
   'app.subtitle': 'Tool Workbench',
   'nav.workspace': 'Workspace',
   'nav.sources': 'Connections',

@@ -108,20 +108,18 @@ async function request(route, method = 'GET', data) {
 }
 
 function updateInstanceChrome() {
-  if (!state) return;
+  const mode = needsLogin ? 'remote' : state?.mode;
+  if (!mode) return;
+  const remote = mode === 'remote';
   const tag = $('#instance-tag');
   if (tag) {
-    const prefix =
-      state.mode === 'remote'
-        ? t('top.remote')
-        : state.demo
-          ? t('top.localDemo')
-          : t('top.local');
-    tag.textContent = state.mode === 'remote' && state.publicUrl ? prefix : `${prefix} · :${state.port}`;
+    const prefix = remote ? t('top.remote') : t(state.demo ? 'top.localDemo' : 'top.local');
+    tag.textContent = needsLogin || (remote && state.publicUrl) ? prefix : `${prefix} · :${state.port}`;
+    tag.parentElement.hidden = false;
   }
   const modeLabel = $('#mode-label');
   if (modeLabel) {
-    modeLabel.textContent = state.mode === 'remote' ? t('footer.remote') : t('footer.local');
+    modeLabel.textContent = t(remote ? 'footer.remote' : 'footer.local');
   }
 }
 
@@ -1516,6 +1514,7 @@ document.addEventListener('keydown', (e) => {
 
 function renderLogin() {
   needsLogin = true;
+  updateInstanceChrome();
   const pwd = el('input', {
     type: 'password',
     required: true,

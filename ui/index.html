@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>MCP Shelf · Local Tool Workbench</title>
+  <title>MCP Shelf · Tool Workbench</title>
   <link rel="icon" href="/icon.svg">
   <link rel="stylesheet" href="/style.css">
   <script type="module" src="/app.js"></script>
@@ -60,7 +60,7 @@
         </button>
       </nav>
       <footer>
-        <i class="live"></i> <span id="mode-label" data-i18n="footer.local">Local instance</span> <small>v0.8.8</small>
+        <i class="live"></i> <span id="mode-label"></span> <small>v0.8.9</small>
       </footer>
     </aside>
     <main>
@@ -68,7 +68,7 @@
         <div class="crumbs"><span class="crumb-root" data-i18n="top.workspace">Workbench</span> <span>/</span> <b id="crumb">Connections</b></div>
         <div class="top-right">
           <select id="lang-select" class="lang-select" aria-label="Language"></select>
-          <div class="tag"><i class="live"></i> <span id="instance-tag">Local only</span></div>
+          <div class="tag" hidden><i class="live"></i> <span id="instance-tag"></span></div>
         </div>
       </div>
       <div id="content" aria-busy="true" data-i18n="loading">Loading configuration…</div>

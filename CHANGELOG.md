@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.9] - 2026-11-28
+
+- Use a deployment-neutral workbench title and show the remote instance labels on the sign-in page in English and Simplified Chinese.
+
 ## [0.8.8] - 2026-11-28
 
 - Preview up to 20 upstream MCP servers in the gateway instructions and tool descriptions. Show compact server IDs when descriptions exceed the character budget and link to `list_mcps` for the remaining connections.
